@@ -5,8 +5,111 @@ import '@liminalcash/nim-chat/styles.css'
 import './styles.css'
 import { SpendingCategories } from './SpendingCategories'
 
+// Shared context for weekly goal data
+const WeeklyGoalContext = React.createContext<any>(null)
+
+// Notification Bell Component - reads from shared context
+function NotificationBell() {
+  const goalData = React.useContext(WeeklyGoalContext)
+  const [showNotification, setShowNotification] = React.useState(false)
+  const [hasAutoShown, setHasAutoShown] = React.useState(false)
+
+  // Auto-show notification when budget warning or exceeded
+  React.useEffect(() => {
+    if (!goalData || !goalData.goal_set || hasAutoShown) return
+    
+    const percentage = goalData.percentage || 0
+    if (percentage >= 80) {
+      setShowNotification(true)
+      setHasAutoShown(true)
+      
+      // Auto-hide after 8 seconds
+      const timer = setTimeout(() => setShowNotification(false), 8000)
+      return () => clearTimeout(timer)
+    }
+  }, [goalData, hasAutoShown])
+
+  if (!goalData || !goalData.goal_set) {
+    return (
+      <>
+        <div className="notification-bell" onClick={() => setShowNotification(!showNotification)}>
+          <span className="bell-icon">🔔</span>
+        </div>
+        {showNotification && (
+          <div className="notification-popup">
+            <div className="notification-header normal">
+              <span>💰 Weekly Budget</span>
+              <button onClick={() => setShowNotification(false)}>×</button>
+            </div>
+            <div className="notification-body">
+              <p>No weekly spending goal set yet</p>
+              <p className="notification-details">
+                Ask Nim: "Set a weekly spend of 5 LIL"
+              </p>
+            </div>
+          </div>
+        )}
+      </>
+    )
+  }
+
+  const percentage = goalData.percentage || 0
+  const budgetExceeded = percentage >= 100
+  const budgetWarning = percentage >= 80 && percentage < 100
+
+  return (
+    <>
+      <div className="notification-bell" onClick={() => setShowNotification(!showNotification)}>
+        <span className="bell-icon">🔔</span>
+        {(budgetExceeded || budgetWarning) && <span className="notification-badge"></span>}
+      </div>
+      
+      {showNotification && (
+        <div className="notification-popup">
+          <div className={`notification-header ${budgetExceeded ? 'exceeded' : budgetWarning ? 'warning' : 'normal'}`}>
+            <span>
+              {budgetExceeded ? '🚨 Budget Exceeded!' : budgetWarning ? '⚠️ Budget Warning' : '💰 Weekly Budget'}
+            </span>
+            <button onClick={() => setShowNotification(false)}>×</button>
+          </div>
+          <div className="notification-body">
+            {budgetExceeded ? (
+              <>
+                <p><strong>You've exceeded your weekly spending limit!</strong></p>
+                <p className="notification-details">
+                  Spent: {goalData.spent_so_far} {goalData.currency}<br/>
+                  Goal: {goalData.goal_amount} {goalData.currency}<br/>
+                  Over by: {(goalData.spent_so_far - goalData.goal_amount).toFixed(2)} {goalData.currency}
+                </p>
+              </>
+            ) : budgetWarning ? (
+              <>
+                <p><strong>You're approaching your spending limit!</strong></p>
+                <p className="notification-details">
+                  Spent: {goalData.spent_so_far} {goalData.currency}<br/>
+                  Goal: {goalData.goal_amount} {goalData.currency}<br/>
+                  Remaining: {goalData.remaining} {goalData.currency}
+                </p>
+              </>
+            ) : (
+              <>
+                <p>Your weekly budget is on track ✓</p>
+                <p className="notification-details">
+                  Spent: {goalData.spent_so_far} {goalData.currency}<br/>
+                  Goal: {goalData.goal_amount} {goalData.currency}<br/>
+                  Remaining: {goalData.remaining} {goalData.currency}
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 // Weekly Spending Goal Component
-function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
+function WeeklySpendingGoalWithContext({ wsUrl, setGoalData: setParentGoalData }: { wsUrl: string, setGoalData: (data: any) => void }) {
   const [goalData, setGoalData] = React.useState<any>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -14,6 +117,11 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
   const wsRef = React.useRef<WebSocket | null>(null)
 
   const [authToken, setAuthToken] = React.useState<string | null>(null)
+
+  // Update parent context whenever goal data changes
+  React.useEffect(() => {
+    setParentGoalData(goalData)
+  }, [goalData, setParentGoalData])
 
   const buildWsUrl = React.useCallback(() => {
     try {
@@ -69,9 +177,16 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
     return null
   }, [])
 
+  const fetchGoalData = React.useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      // Re-initialize conversation to get fresh data
+      wsRef.current.send(JSON.stringify({ type: 'new_conversation' }))
+    }
+  }, [])
+
   React.useEffect(() => {
-    let reconnectTimeout: NodeJS.Timeout | null = null
     let responseTimeout: NodeJS.Timeout | null = null
+    let pollInterval: NodeJS.Timeout | null = null
 
     const connectAndFetch = () => {
       try {
@@ -88,6 +203,14 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
               setError('No goal set')
             }
           }, 5000)
+
+          // Poll for updates every 30 seconds
+          pollInterval = setInterval(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              console.log('Polling for weekly goal updates...')
+              wsRef.current.send(JSON.stringify({ type: 'new_conversation' }))
+            }
+          }, 30000)
         }
 
         wsRef.current.onmessage = (event) => {
@@ -133,8 +256,11 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
         }
 
         wsRef.current.onclose = () => {
-          console.log('WebSocket closed')
-          // Do not auto-reconnect in a loop; refresh manually if needed
+          console.log('WebSocket closed, reconnecting...')
+          // Reconnect after 2 seconds
+          setTimeout(() => {
+            connectAndFetch()
+          }, 2000)
         }
       } catch (e) {
         console.error('WebSocket connection failed:', e)
@@ -146,7 +272,7 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
     connectAndFetch()
 
     return () => {
-      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      if (pollInterval) clearInterval(pollInterval)
       if (responseTimeout) clearTimeout(responseTimeout)
       wsRef.current?.close()
     }
@@ -196,7 +322,25 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
 
   return (
     <div className="weekly-goal-widget">
-      <h3>💰 Weekly Spending Goal</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <h3 style={{ margin: 0 }}>💰 Weekly Spending Goal</h3>
+        <button 
+          onClick={fetchGoalData}
+          style={{
+            background: 'var(--cream)',
+            border: '2px solid var(--black)',
+            borderRadius: '6px',
+            padding: '0.5rem 0.75rem',
+            cursor: 'pointer',
+            fontSize: '0.875rem',
+            fontFamily: 'ABC Marist, sans-serif',
+            fontWeight: 500,
+          }}
+          title="Refresh goal data"
+        >
+          🔄 Refresh
+        </button>
+      </div>
       
       <div className="spending-details">
         <div className="spent">
@@ -235,13 +379,16 @@ function WeeklySpendingGoal({ wsUrl }: { wsUrl: string }) {
 function App() {
   const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws'
   const apiUrl = import.meta.env.VITE_API_URL || 'https://api.liminal.cash'
+  const [weeklyGoalData, setWeeklyGoalData] = React.useState<any>(null)
 
   return (
-    <>
+    <WeeklyGoalContext.Provider value={weeklyGoalData}>
+      <NotificationBell />
+      
       <main>
         <h1>Build financial autonomy for AI</h1>
 
-        <WeeklySpendingGoal wsUrl={wsUrl} />
+        <WeeklySpendingGoalWithContext wsUrl={wsUrl} setGoalData={setWeeklyGoalData} />
         <SpendingCategories wsUrl={wsUrl} />
 
         <ol>
@@ -298,7 +445,7 @@ function App() {
         position="bottom-right"
         defaultOpen={false}
       />
-    </>
+    </WeeklyGoalContext.Provider>
   )
 }
 
