@@ -109,7 +109,7 @@ function NotificationBell() {
 }
 
 // Weekly Spending Goal Component
-function WeeklySpendingGoalWithContext({ wsUrl, setGoalData: setParentGoalData }: { wsUrl: string, setGoalData: (data: any) => void }) {
+function WeeklySpendingGoalWithContext({ wsUrl, setGoalData: setParentGoalData, onRefresh }: { wsUrl: string, setGoalData: (data: any) => void, onRefresh?: () => React.MutableRefObject<(() => void) | null> }) {
   const [goalData, setGoalData] = React.useState<any>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -183,6 +183,20 @@ function WeeklySpendingGoalWithContext({ wsUrl, setGoalData: setParentGoalData }
       wsRef.current.send(JSON.stringify({ type: 'new_conversation' }))
     }
   }, [])
+
+  React.useEffect(() => {
+    if (onRefresh) {
+      const ref = onRefresh()
+      ref.current = fetchGoalData
+    }
+  }, [onRefresh, fetchGoalData])
+
+  React.useEffect(() => {
+    if (onRefresh) {
+      // Expose refresh function to parent
+      onRefresh.call = fetchGoalData
+    }
+  }, [onRefresh, fetchGoalData])
 
   React.useEffect(() => {
     let responseTimeout: NodeJS.Timeout | null = null
@@ -322,25 +336,7 @@ function WeeklySpendingGoalWithContext({ wsUrl, setGoalData: setParentGoalData }
 
   return (
     <div className="weekly-goal-widget">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0 }}>💰 Weekly Spending Goal</h3>
-        <button 
-          onClick={fetchGoalData}
-          style={{
-            background: 'var(--cream)',
-            border: '2px solid var(--black)',
-            borderRadius: '6px',
-            padding: '0.5rem 0.75rem',
-            cursor: 'pointer',
-            fontSize: '0.875rem',
-            fontFamily: 'ABC Marist, sans-serif',
-            fontWeight: 500,
-          }}
-          title="Refresh goal data"
-        >
-          🔄 Refresh
-        </button>
-      </div>
+      <h3>💰 Weekly Spending Goal</h3>
       
       <div className="spending-details">
         <div className="spent">
@@ -380,6 +376,101 @@ function App() {
   const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws'
   const apiUrl = import.meta.env.VITE_API_URL || 'https://api.liminal.cash'
   const [weeklyGoalData, setWeeklyGoalData] = React.useState<any>(null)
+  const weeklyGoalRefreshRef = React.useRef<(() => void) | null>(null)
+  const categoriesRefreshRef = React.useRef<(() => void) | null>(null)
+  const lastTransactionCountRef = React.useRef<number | null>(null)
+  const monitorWsRef = React.useRef<WebSocket | null>(null)
+
+  // Monitor for new transactions and trigger widget refreshes
+  React.useEffect(() => {
+    const buildWsUrl = () => {
+      try {
+        const token = localStorage.getItem('nim_access_token')
+        if (!token) return wsUrl
+        const url = new URL(wsUrl)
+        url.searchParams.set('token', token)
+        return url.toString()
+      } catch {
+        return wsUrl
+      }
+    }
+
+    const connectMonitor = () => {
+      const url = buildWsUrl()
+      monitorWsRef.current = new WebSocket(url)
+
+      monitorWsRef.current.onopen = () => {
+        console.log('Transaction monitor connected')
+        // Initialize conversation and check transactions
+        monitorWsRef.current?.send(JSON.stringify({ type: 'new_conversation' }))
+        
+        // Poll every 10 seconds for new transactions
+        const pollInterval = setInterval(() => {
+          if (monitorWsRef.current?.readyState === WebSocket.OPEN) {
+            const message = {
+              type: 'message',
+              content: 'Call get_transactions and return just the count of total transactions as a number'
+            }
+            monitorWsRef.current.send(JSON.stringify(message))
+          }
+        }, 10000)
+
+        monitorWsRef.current.addEventListener('close', () => {
+          clearInterval(pollInterval)
+        })
+      }
+
+      monitorWsRef.current.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          
+          if (data.type === 'conversation_started') {
+            // Request initial transaction count
+            const message = {
+              type: 'message',
+              content: 'Call get_transactions and return just the count of total transactions as a number'
+            }
+            monitorWsRef.current?.send(JSON.stringify(message))
+            return
+          }
+          
+          if (data.type === 'text' && typeof data.content === 'string') {
+            // Try to extract transaction count from response
+            const countMatch = data.content.match(/(?:count|total|transactions?)[:\s]*([0-9]+)/i)
+            if (countMatch) {
+              const currentCount = parseInt(countMatch[1], 10)
+              
+              if (lastTransactionCountRef.current !== null && currentCount > lastTransactionCountRef.current) {
+                console.log('🔔 New transaction detected! Refreshing widgets...')
+                // Trigger refresh of all widgets
+                weeklyGoalRefreshRef.current?.()
+                categoriesRefreshRef.current?.()
+              }
+              
+              lastTransactionCountRef.current = currentCount
+            }
+          }
+        } catch (e) {
+          console.error('Monitor message parse error:', e)
+        }
+      }
+
+      monitorWsRef.current.onclose = () => {
+        console.log('Transaction monitor disconnected, reconnecting...')
+        setTimeout(connectMonitor, 3000)
+      }
+
+      monitorWsRef.current.onerror = (err) => {
+        console.error('Monitor WebSocket error:', err)
+      }
+    }
+
+    connectMonitor()
+
+    return () => {
+      monitorWsRef.current?.close()
+    }
+  }, [wsUrl])
 
   return (
     <WeeklyGoalContext.Provider value={weeklyGoalData}>
@@ -388,8 +479,15 @@ function App() {
       <main>
         <h1>Build financial autonomy for AI</h1>
 
-        <WeeklySpendingGoalWithContext wsUrl={wsUrl} setGoalData={setWeeklyGoalData} />
-        <SpendingCategories wsUrl={wsUrl} />
+        <WeeklySpendingGoalWithContext 
+          wsUrl={wsUrl} 
+          setGoalData={setWeeklyGoalData}
+          onRefresh={() => weeklyGoalRefreshRef}
+        />
+        <SpendingCategories 
+          wsUrl={wsUrl}
+          onRefresh={() => categoriesRefreshRef}
+        />
 
         <ol>
           <li>

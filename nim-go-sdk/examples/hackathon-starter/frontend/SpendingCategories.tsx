@@ -11,13 +11,15 @@ interface CategoryData {
 
 interface SpendingCategoriesProps {
   wsUrl: string
+  onRefresh?: () => React.MutableRefObject<(() => void) | null>
 }
 
-export function SpendingCategories({ wsUrl }: SpendingCategoriesProps) {
+export function SpendingCategories({ wsUrl, onRefresh }: SpendingCategoriesProps) {
   const [categoryData, setCategoryData] = React.useState<CategoryData | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const wsRef = React.useRef<WebSocket | null>(null)
+  const pollIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
 
   const buildWsUrl = React.useCallback(() => {
     try {
@@ -88,6 +90,19 @@ export function SpendingCategories({ wsUrl }: SpendingCategoriesProps) {
     return null
   }, [])
 
+  const fetchCategories = React.useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'new_conversation' }))
+    }
+  }, [])
+
+  React.useEffect(() => {
+    if (onRefresh) {
+      const ref = onRefresh()
+      ref.current = fetchCategories
+    }
+  }, [onRefresh, fetchCategories])
+
   React.useEffect(() => {
     let responseTimeout: NodeJS.Timeout | null = null
 
@@ -99,6 +114,15 @@ export function SpendingCategories({ wsUrl }: SpendingCategoriesProps) {
         wsRef.current.onopen = () => {
           console.log('Categories WS open:', url)
           wsRef.current?.send(JSON.stringify({ type: 'new_conversation' }))
+
+          // Poll for updates every 30 seconds
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+          pollIntervalRef.current = setInterval(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              console.log('Polling for category updates...')
+              wsRef.current.send(JSON.stringify({ type: 'new_conversation' }))
+            }
+          }, 30000)
 
           responseTimeout = setTimeout(() => {
             if (loading) {
@@ -145,7 +169,12 @@ export function SpendingCategories({ wsUrl }: SpendingCategoriesProps) {
         }
 
         wsRef.current.onclose = () => {
-          console.log('WebSocket closed')
+          console.log('Categories WebSocket closed, reconnecting...')
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+          // Reconnect after 2 seconds
+          setTimeout(() => {
+            connectAndFetch()
+          }, 2000)
         }
       } catch (e) {
         console.error('WebSocket connection failed:', e)
@@ -158,6 +187,7 @@ export function SpendingCategories({ wsUrl }: SpendingCategoriesProps) {
 
     return () => {
       if (responseTimeout) clearTimeout(responseTimeout)
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
       wsRef.current?.close()
     }
   }, [buildWsUrl, requestCategories, parseCategoryData])
