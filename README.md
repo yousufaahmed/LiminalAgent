@@ -5,7 +5,11 @@ A complete financial management platform combining AI-powered conversation, real
 <img width="2545" height="1346" alt="image" src="https://github.com/user-attachments/assets/6b31c1fd-43ef-4eaf-a946-db29b272dbb6" />
 
 
-![Application Overview](nim-go-sdk/examples/hackathon-starter/imgs/Screenshot%202026-02-01%20084736.png)
+
+
+<img width="434" height="661" alt="Screenshot 2026-02-01 113020" src="https://github.com/user-attachments/assets/a4f9a65f-8e3c-4f41-aaf4-36c04566ca5d" />
+
+
 
 ## ✨ Features
 
