@@ -4,6 +4,7 @@ import { NimChat } from '@liminalcash/nim-chat'
 import '@liminalcash/nim-chat/styles.css'
 import './styles.css'
 import { SpendingCategories } from './SpendingCategories'
+import { NimOutput } from './NimOutput'
 
 // Shared context for weekly goal data
 const WeeklyGoalContext = React.createContext<any>(null)
@@ -376,6 +377,7 @@ function App() {
   const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws'
   const apiUrl = import.meta.env.VITE_API_URL || 'https://api.liminal.cash'
   const [weeklyGoalData, setWeeklyGoalData] = React.useState<any>(null)
+  const [chartData, setChartData] = React.useState<any>(null)
   const weeklyGoalRefreshRef = React.useRef<(() => void) | null>(null)
   const categoriesRefreshRef = React.useRef<(() => void) | null>(null)
   const lastTransactionCountRef = React.useRef<number | null>(null)
@@ -423,6 +425,27 @@ function App() {
       monitorWsRef.current.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+          console.log('🔍 Monitor received:', data)
+          
+          // Check for chart data in messages
+          if (data.type === 'text' && typeof data.content === 'string') {
+            console.log('🔍 Checking for chart data in text...')
+            const chartMatch = data.content.match(/CHART_DATA_START\s*(\{[\s\S]*?\})\s*CHART_DATA_END/i)
+            if (chartMatch) {
+              console.log('🔍 Chart data found! Matched:', chartMatch[1])
+              try {
+                const chartInfo = JSON.parse(chartMatch[1])
+                if (chartInfo.labels && chartInfo.values && chartInfo.title) {
+                  console.log('📊 Chart data found in monitor, updating context:', chartInfo)
+                  setChartData(chartInfo)
+                }
+              } catch (e) {
+                console.error('Failed to parse chart data:', e)
+              }
+            } else {
+              console.log('🔍 No chart markers in this message')
+            }
+          }
           
           if (data.type === 'conversation_started') {
             // Request initial transaction count
@@ -488,6 +511,7 @@ function App() {
           wsUrl={wsUrl}
           onRefresh={() => categoriesRefreshRef}
         />
+        <NimOutput wsUrl={wsUrl} chartData={chartData} />
 
         <ol>
           <li>

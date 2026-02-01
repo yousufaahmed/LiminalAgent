@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -108,7 +110,14 @@ func main() {
 	srv.AddTool(createGetWeeklyGoalProgressTool(liminalExecutor))
 	srv.AddTool(createCheckWeeklySpendTool(liminalExecutor))
 	srv.AddTool(createCategorizeTransactionTool(liminalExecutor))
-	log.Println("✅ Added custom spending analyzer, weekly goal, and categorization tools")
+	srv.AddTool(createChartGeneratorTool(liminalExecutor))
+	
+	// ============================================================================
+	// INITIALIZE LANGGRAPH ORCHESTRATOR
+	// ============================================================================
+	// Create the graph workflow and add it as a tool
+	srv.AddTool(createGraphOrchestratorTool(liminalExecutor))
+	log.Println("✅ Added custom tools with LangGraph orchestrator")
 
 	// TODO: Add more custom tools here!
 	// Examples:
@@ -122,11 +131,30 @@ func main() {
 	// START SERVER
 	// ============================================================================
 
+	// Create charts directory if it doesn't exist
+	chartsDir := filepath.Join(".", "charts")
+	if err := os.MkdirAll(chartsDir, 0755); err != nil {
+		log.Printf("Warning: Could not create charts directory: %v", err)
+	}
+
+	// Serve static chart files
+	http.HandleFunc("/charts/", func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "image/svg+xml")
+		
+		filename := filepath.Base(r.URL.Path)
+		filepath := filepath.Join(chartsDir, filename)
+		
+		http.ServeFile(w, r, filepath)
+	})
+
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("🚀 Hackathon Starter Server Running")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("📡 WebSocket endpoint: ws://localhost:%s/ws", port)
 	log.Printf("💚 Health check: http://localhost:%s/health", port)
+	log.Printf("📊 Charts: http://localhost:%s/charts/", port)
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("Ready for connections! Start your frontend with: cd frontend && npm run dev")
 	log.Println()
@@ -143,6 +171,12 @@ func main() {
 // Customize this to match your hackathon project's focus!
 
 const hackathonSystemPrompt = `You are Nim, a friendly AI financial assistant built for the Liminal Vibe Banking Hackathon.
+
+IMPORTANT - REQUEST ROUTING:
+For EVERY user request, you MUST first call the route_request tool with their message. This orchestrator will analyze their intent and guide you on the best way to help them. The orchestrator routes requests to three specialized modes:
+1. General Inquiry - standard banking queries
+2. Image Payment - receipt splitting and image-based payments
+3. Financial Help - financial advice, budgeting, saving guidance
 
 WHAT YOU DO:
 You help users manage their money using Liminal's stablecoin banking platform. You can check balances, review transactions, send money, and manage savings - all through natural conversation.
@@ -181,11 +215,32 @@ AVAILABLE BANKING TOOLS:
 - Withdraw from savings (withdraw_savings) - requires confirmation
 
 CUSTOM ANALYTICAL TOOLS:
+- Route request through orchestrator (route_request) - CALL THIS FIRST!
 - Analyze spending patterns (analyze_spending)
 - Set weekly spending goal (spend_weekly_goal) - requires confirmation
 - Check weekly spending progress (get_weekly_spending_progress)
 - Quick check weekly spend status (check_weeklyspend) - use this for context
 - Categorize spending by transaction notes (categorize_transactions)
+- Generate balance trend chart (generate_chart) - Shows account balance over time
+
+IMPORTANT - BALANCE TREND CHART:
+When a user asks for a chart, graph, visualization, trend, or wants to see their balance over time:
+1. ALWAYS call the generate_chart tool with: chart_type='line', data_type='balance_trend', days=30 (or user's requested timeframe)
+2. The tool will return an 'image_url' containing a base64-encoded SVG chart
+3. Display the chart directly in your response using markdown image syntax:
+
+![Balance Trend Chart](IMAGE_URL_FROM_TOOL)
+
+Replace IMAGE_URL_FROM_TOOL with the actual 'image_url' value from the generate_chart tool result.
+4. Explain what the chart shows - their account balance trend over time based on transaction history
+5. The chart image is also saved to a temp file (the tool returns 'file_path' with location)
+
+Example response after calling generate_chart:
+"Here's your account balance trend over the last 30 days:
+
+![Balance Trend Chart](data:image/svg+xml;base64,PHN2Zy4uLg==)
+
+The chart shows how your balance has changed over time based on your transaction history. Your current balance is $1,234.56."
 
 TIPS FOR GREAT INTERACTIONS:
 - Proactively suggest relevant actions ("Want me to move some to savings?")
@@ -818,9 +873,9 @@ func createCategorizeTransactionTool(liminalExecutor core.ToolExecutor) core.Too
 			// Use Claude structured output to categorize
 			categorized, err := categorizeWithStructuredOutput(spendingNotes)
 			if err != nil {
-				log.Printf("AI categorization failed, falling back to keyword matching: %v", err)
+				log.Printf("AI categorization failed, using fallback: %v", err)
 				// Fallback to keyword matching
-				return fallbackCategorization(spendingNotes), nil
+				categorized = fallbackCategorization(spendingNotes)
 			}
 
 			return &core.ToolResult{
@@ -829,6 +884,77 @@ func createCategorizeTransactionTool(liminalExecutor core.ToolExecutor) core.Too
 			}, nil
 		}).
 		Build()
+}
+
+// fallbackCategorization uses keyword matching when AI categorization fails
+func fallbackCategorization(notes []string) map[string]interface{} {
+	categories := map[string]int{
+		"food":          0,
+		"travel":        0,
+		"subscription":  0,
+		"entertainment": 0,
+		"electronics":   0,
+		"miscellaneous": 0,
+	}
+
+	var breakdown []string
+	for _, note := range notes {
+		category := categorizeNote(note)
+		categories[category]++
+		breakdown = append(breakdown, fmt.Sprintf("%s: %s", note, category))
+	}
+
+	return map[string]interface{}{
+		"categories":     categories,
+		"total_analyzed": len(notes),
+		"breakdown":      breakdown,
+	}
+}
+
+// categorizeNote uses simple keyword matching to categorize transaction notes
+func categorizeNote(note string) string {
+	note = strings.ToLower(note)
+
+	// Food keywords
+	if strings.Contains(note, "food") || strings.Contains(note, "restaurant") ||
+		strings.Contains(note, "cafe") || strings.Contains(note, "coffee") ||
+		strings.Contains(note, "lunch") || strings.Contains(note, "dinner") ||
+		strings.Contains(note, "grocery") || strings.Contains(note, "meal") ||
+		strings.Contains(note, "hulu") {
+		return "food"
+	}
+
+	// Travel keywords
+	if strings.Contains(note, "uber") || strings.Contains(note, "lyft") ||
+		strings.Contains(note, "flight") || strings.Contains(note, "hotel") ||
+		strings.Contains(note, "gas") || strings.Contains(note, "parking") ||
+		strings.Contains(note, "taxi") || strings.Contains(note, "bus") ||
+		strings.Contains(note, "train") || strings.Contains(note, "ticket") {
+		return "travel"
+	}
+
+	// Subscription keywords
+	if strings.Contains(note, "subscription") || strings.Contains(note, "netflix") ||
+		strings.Contains(note, "spotify") || strings.Contains(note, "monthly") ||
+		strings.Contains(note, "membership") || strings.Contains(note, "premium") {
+		return "subscription"
+	}
+
+	// Entertainment keywords
+	if strings.Contains(note, "movie") || strings.Contains(note, "concert") ||
+		strings.Contains(note, "game") || strings.Contains(note, "entertainment") ||
+		strings.Contains(note, "video") {
+		return "entertainment"
+	}
+
+	// Electronics keywords
+	if strings.Contains(note, "phone") || strings.Contains(note, "laptop") ||
+		strings.Contains(note, "computer") || strings.Contains(note, "electronics") ||
+		strings.Contains(note, "gadget") || strings.Contains(note, "tech") {
+		return "electronics"
+	}
+
+	return "miscellaneous"
 }
 
 // categorizeWithStructuredOutput uses Claude's structured output to categorize transactions
@@ -958,77 +1084,401 @@ func categorizeWithStructuredOutput(notes []string) (map[string]interface{}, err
 	}, nil
 }
 
-// fallbackCategorization uses keyword matching when AI categorization fails
-func fallbackCategorization(notes []string) *core.ToolResult {
-	categories := map[string]int{
-		"food":          0,
-		"travel":        0,
-		"subscription":  0,
-		"entertainment": 0,
-		"electronics":   0,
-		"miscellaneous": 0,
+// generateBalanceTrendFromTransactions creates a line chart showing balance over time
+func generateBalanceTrendFromTransactions(transactions []map[string]interface{}, currentBalance float64, days int) map[string]interface{} {
+	log.Printf("📊 Generating balance trend from %d transactions, current balance: %.2f", len(transactions), currentBalance)
+
+	if len(transactions) == 0 {
+		return map[string]interface{}{
+			"labels": []string{"Today"},
+			"values": []float64{currentBalance},
+			"title":  "Account Balance Trend",
+		}
 	}
 
-	var breakdown []string
-	for _, note := range notes {
-		category := categorizeNote(note)
-		categories[category]++
-		breakdown = append(breakdown, fmt.Sprintf("%s: %s", note, category))
+	// Sort transactions by date (oldest first)
+	sortedTxs := make([]map[string]interface{}, len(transactions))
+	copy(sortedTxs, transactions)
+	
+	sort.Slice(sortedTxs, func(i, j int) bool {
+		timeI, _ := time.Parse(time.RFC3339, sortedTxs[i]["createdAt"].(string))
+		timeJ, _ := time.Parse(time.RFC3339, sortedTxs[j]["createdAt"].(string))
+		return timeI.Before(timeJ)
+	})
+
+	// Calculate starting balance by working backwards from current balance
+	runningBalance := currentBalance
+	for i := len(sortedTxs) - 1; i >= 0; i-- {
+		tx := sortedTxs[i]
+		direction, _ := tx["direction"].(string)
+		
+		var amount float64
+		if amountStr, ok := tx["amount"].(string); ok {
+			fmt.Sscanf(amountStr, "%f", &amount)
+		} else if amountFloat, ok := tx["amount"].(float64); ok {
+			amount = amountFloat
+		}
+
+		// Reverse the transaction to get starting balance
+		if direction == "credit" {
+			runningBalance -= amount // Was a credit, so subtract to go back
+		} else if direction == "debit" {
+			runningBalance += amount // Was a debit, so add to go back
+		}
 	}
 
-	return &core.ToolResult{
-		Success: true,
-		Data: map[string]interface{}{
-			"categories":     categories,
-			"total_analyzed": len(notes),
-			"breakdown":      breakdown,
-		},
+	startingBalance := runningBalance
+	log.Printf("📊 Calculated starting balance: %.2f", startingBalance)
+
+	// Now go forward through transactions building the balance timeline
+	labels := []string{}
+	values := []float64{}
+	
+	// Add starting point
+	if len(sortedTxs) > 0 {
+		firstTxTime, _ := time.Parse(time.RFC3339, sortedTxs[0]["createdAt"].(string))
+		labels = append(labels, firstTxTime.Format("Jan 2"))
+		values = append(values, startingBalance)
+	}
+
+	runningBalance = startingBalance
+	for _, tx := range sortedTxs {
+		direction, _ := tx["direction"].(string)
+		
+		var amount float64
+		if amountStr, ok := tx["amount"].(string); ok {
+			fmt.Sscanf(amountStr, "%f", &amount)
+		} else if amountFloat, ok := tx["amount"].(float64); ok {
+			amount = amountFloat
+		}
+
+		// Apply transaction
+		if direction == "credit" {
+			runningBalance += amount
+		} else if direction == "debit" {
+			runningBalance -= amount
+		}
+
+		txTime, _ := time.Parse(time.RFC3339, tx["createdAt"].(string))
+		labels = append(labels, txTime.Format("Jan 2"))
+		values = append(values, runningBalance)
+		
+		log.Printf("📊 %s: %s $%.2f -> Balance: $%.2f", txTime.Format("Jan 2"), direction, amount, runningBalance)
+	}
+
+	log.Printf("📊 Final chart: %d data points", len(labels))
+
+	return map[string]interface{}{
+		"labels": labels,
+		"values": values,
+		"title":  "Account Balance Trend",
 	}
 }
 
-// categorizeNote uses simple keyword matching to categorize transaction notes
-func categorizeNote(note string) string {
-	note = strings.ToLower(note)
+// generateSVGChart creates an SVG image from chart data
+func generateSVGChart(chartData map[string]interface{}) string {
+	labels, _ := chartData["labels"].([]string)
+	valuesInterface, _ := chartData["values"].([]float64)
+	title, _ := chartData["title"].(string)
 
-	// Food keywords
-	if strings.Contains(note, "food") || strings.Contains(note, "restaurant") ||
-		strings.Contains(note, "cafe") || strings.Contains(note, "coffee") ||
-		strings.Contains(note, "lunch") || strings.Contains(note, "dinner") ||
-		strings.Contains(note, "grocery") || strings.Contains(note, "meal") {
-		return "food"
+	if len(labels) == 0 || len(valuesInterface) == 0 {
+		return `<svg width="600" height="400" xmlns="http://www.w3.org/2000/svg"><text x="300" y="200" text-anchor="middle" fill="#666">No data available</text></svg>`
 	}
 
-	// Travel keywords
-	if strings.Contains(note, "uber") || strings.Contains(note, "lyft") ||
-		strings.Contains(note, "flight") || strings.Contains(note, "hotel") ||
-		strings.Contains(note, "gas") || strings.Contains(note, "parking") ||
-		strings.Contains(note, "taxi") || strings.Contains(note, "bus") ||
-		strings.Contains(note, "train") {
-		return "travel"
+	// Chart dimensions
+	width := 800
+	height := 500
+	padding := 80
+	chartWidth := width - padding*2
+	chartHeight := height - padding*2
+
+	// Find min/max values
+	minValue := valuesInterface[0]
+	maxValue := valuesInterface[0]
+	for _, v := range valuesInterface {
+		if v < minValue {
+			minValue = v
+		}
+		if v > maxValue {
+			maxValue = v
+		}
+	}
+	valueRange := maxValue - minValue
+	if valueRange == 0 {
+		valueRange = 1
 	}
 
-	// Subscription keywords
-	if strings.Contains(note, "subscription") || strings.Contains(note, "netflix") ||
-		strings.Contains(note, "spotify") || strings.Contains(note, "monthly") ||
-		strings.Contains(note, "membership") || strings.Contains(note, "premium") {
-		return "subscription"
+	// Build SVG
+	var svg strings.Builder
+	svg.WriteString(fmt.Sprintf(`<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg">`, width, height))
+	
+	// Background
+	svg.WriteString(fmt.Sprintf(`<rect width="%d" height="%d" fill="#ffffff"/>`, width, height))
+	
+	// Title
+	svg.WriteString(fmt.Sprintf(`<text x="%d" y="30" text-anchor="middle" font-size="20" font-weight="bold" fill="#333">%s</text>`, width/2, title))
+	
+	// Grid lines and Y-axis labels
+	for i := 0; i <= 4; i++ {
+		y := float64(padding) + float64(chartHeight*i)/4
+		gridValue := maxValue - (float64(i)/4)*valueRange
+		svg.WriteString(fmt.Sprintf(`<line x1="%d" y1="%.1f" x2="%d" y2="%.1f" stroke="#e0e0e0" stroke-width="1"/>`, padding, y, width-padding, y))
+		svg.WriteString(fmt.Sprintf(`<text x="%d" y="%.1f" text-anchor="end" font-size="12" fill="#666">$%.0f</text>`, padding-10, y+4, gridValue))
 	}
-
-	// Entertainment keywords
-	if strings.Contains(note, "movie") || strings.Contains(note, "concert") ||
-		strings.Contains(note, "game") || strings.Contains(note, "entertainment") ||
-		strings.Contains(note, "ticket") {
-		return "entertainment"
+	
+	// Build points and line path
+	var points []string
+	for i, value := range valuesInterface {
+		x := float64(padding) + (float64(i)/float64(len(valuesInterface)-1))*float64(chartWidth)
+		y := float64(padding) + float64(chartHeight) - ((value-minValue)/valueRange)*float64(chartHeight)
+		points = append(points, fmt.Sprintf("%.1f,%.1f", x, y))
 	}
-
-	// Electronics keywords
-	if strings.Contains(note, "phone") || strings.Contains(note, "laptop") ||
-		strings.Contains(note, "computer") || strings.Contains(note, "electronics") ||
-		strings.Contains(note, "gadget") || strings.Contains(note, "tech") {
-		return "electronics"
+	
+	// Draw line
+	svg.WriteString(fmt.Sprintf(`<polyline points="%s" fill="none" stroke="#4ECDC4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`, strings.Join(points, " ")))
+	
+	// Draw points and labels
+	labelStep := 1
+	if len(labels) > 15 {
+		labelStep = len(labels) / 10
 	}
+	
+	for i, value := range valuesInterface {
+		x := float64(padding) + (float64(i)/float64(len(valuesInterface)-1))*float64(chartWidth)
+		y := float64(padding) + float64(chartHeight) - ((value-minValue)/valueRange)*float64(chartHeight)
+		
+		// Draw point
+		svg.WriteString(fmt.Sprintf(`<circle cx="%.1f" cy="%.1f" r="4" fill="#4ECDC4" stroke="white" stroke-width="2"/>`, x, y))
+		
+		// Draw label (only for selected points to avoid crowding)
+		if i%labelStep == 0 || i == len(labels)-1 {
+			svg.WriteString(fmt.Sprintf(`<text x="%.1f" y="%d" text-anchor="middle" font-size="10" fill="#666" transform="rotate(-45 %.1f %d)">%s</text>`, x, height-padding+20, x, height-padding+20, labels[i]))
+		}
+	}
+	
+	svg.WriteString(`</svg>`)
+	return svg.String()
+}
 
-	return "miscellaneous"
+// ============================================================================
+// CUSTOM TOOL: GRAPH ORCHESTRATOR
+// ============================================================================
+// Routes requests through the LangGraph workflow system
+
+func createGraphOrchestratorTool(liminalExecutor core.ToolExecutor) core.Tool {
+	return tools.New("route_request").
+		Description("Analyze user's request and route to the appropriate specialized handler. Call this FIRST for any user request to determine the best way to help them. Returns routing decision and context.").
+		Schema(tools.ObjectSchema(map[string]interface{}{
+			"user_message": tools.StringProperty("The user's original message/request"),
+		}, "user_message")).
+		Handler(func(ctx context.Context, toolParams *core.ToolParams) (*core.ToolResult, error) {
+			var params struct {
+				UserMessage string `json:"user_message"`
+			}
+			if err := json.Unmarshal(toolParams.Input, &params); err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("invalid input: %v", err),
+				}, nil
+			}
+
+			// Create graph and initialize state
+			graph := CreateFinancialAgentGraph(liminalExecutor)
+			graph.State = &GraphState{
+				Messages:     []string{},
+				UserID:       toolParams.UserID,
+				Conversation: map[string]interface{}{
+					"user_input": params.UserMessage,
+				},
+			}
+
+			// Execute graph workflow
+			if err := graph.Execute(ctx, toolParams.UserID); err != nil {
+				log.Printf("Graph execution error: %v", err)
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("routing failed: %v", err),
+				}, nil
+			}
+
+			// Extract routing decision
+			route, _ := graph.State.Conversation["route"].(string)
+			handlerType, _ := graph.State.Conversation["handler_type"].(string)
+
+			var guidance string
+			switch handlerType {
+			case "image_payment":
+				guidance = "User wants to split a payment or send money based on an image/receipt. You should ask for the receipt image, analyze it, calculate splits, and use send_money tool to process payments."
+			case "financial_help":
+				guidance = "User needs financial guidance and advice. Use check_weeklyspend, analyze_spending, and categorize_transactions to provide comprehensive financial insights. Give actionable recommendations for saving and budgeting."
+			case "general":
+				// Check if chart was requested
+				if chartRequested, ok := graph.State.Conversation["chart_requested"].(bool); ok && chartRequested {
+					guidance = "User requested a balance trend chart. You MUST call the generate_chart tool with these parameters:\n- chart_type: 'line'\n- data_type: 'balance_trend'\n- days: 30 (or ask the user for a timeframe)\n\nAfter calling generate_chart, you will receive an 'image_url' field with a base64-encoded SVG. Display it in your response using markdown:\n\n![Balance Trend Chart](image_url_here)\n\nReplace 'image_url_here' with the actual image_url from the tool result. Explain that this shows their account balance over time based on transaction history."
+				} else {
+					guidance = "Standard query. Use appropriate banking tools (get_balance, get_transactions, etc.) to help the user."
+				}
+			default:
+				guidance = "Process as a general query."
+			}
+
+			result := map[string]interface{}{
+				"route":        route,
+				"handler_type": handlerType,
+				"guidance":     guidance,
+				"user_message": params.UserMessage,
+			}
+
+			return &core.ToolResult{
+				Success: true,
+				Data:    result,
+			}, nil
+		}).
+		Build()
+}
+
+// ============================================================================
+// CUSTOM TOOL: CHART GENERATOR
+// ============================================================================
+// Generates charts and graphs from financial data using go-chart library
+// Similar to matplotlib in Python
+
+func createChartGeneratorTool(liminalExecutor core.ToolExecutor) core.Tool {
+	return tools.New("generate_chart").
+		Description("Generate a line chart showing account balance trend over time. Calculates running balance from transaction history in chronological order.").
+		Schema(tools.ObjectSchema(map[string]interface{}{
+			"chart_type": tools.StringProperty("Type of chart: always 'line' for balance trend"),
+			"data_type":  tools.StringProperty("What to visualize: always 'balance_trend'"),
+			"days":       tools.IntegerProperty("Number of days of data to include (default: 30)"),
+		})).
+		Handler(func(ctx context.Context, toolParams *core.ToolParams) (*core.ToolResult, error) {
+			var params struct {
+				ChartType string `json:"chart_type"`
+				DataType  string `json:"data_type"`
+				Days      int    `json:"days"`
+			}
+			if err := json.Unmarshal(toolParams.Input, &params); err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("invalid input: %v", err),
+				}, nil
+			}
+
+			// Set defaults
+			if params.Days == 0 {
+				params.Days = 30
+			}
+
+			// Fetch transaction data
+			txRequest := map[string]interface{}{"limit": 200}
+			txRequestJSON, _ := json.Marshal(txRequest)
+
+			txResponse, err := liminalExecutor.Execute(ctx, &core.ExecuteRequest{
+				UserID:    toolParams.UserID,
+				Tool:      "get_transactions",
+				Input:     txRequestJSON,
+				RequestID: toolParams.RequestID,
+			})
+			if err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("failed to fetch transactions: %v", err),
+				}, nil
+			}
+
+			if !txResponse.Success {
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("transaction fetch failed: %s", txResponse.Error),
+				}, nil
+			}
+
+			// Get current balance
+			balanceResponse, err := liminalExecutor.Execute(ctx, &core.ExecuteRequest{
+				UserID:    toolParams.UserID,
+				Tool:      "get_balance",
+				Input:     []byte("{}"),
+				RequestID: toolParams.RequestID,
+			})
+			if err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("failed to fetch balance: %v", err),
+				}, nil
+			}
+
+			// Parse current balance
+			var currentBalance float64
+			if balanceResponse.Success {
+				var balanceData map[string]interface{}
+				if err := json.Unmarshal(balanceResponse.Data, &balanceData); err == nil {
+					if balanceStr, ok := balanceData["balance"].(string); ok {
+						fmt.Sscanf(balanceStr, "%f", &currentBalance)
+					} else if balanceFloat, ok := balanceData["balance"].(float64); ok {
+						currentBalance = balanceFloat
+					}
+				}
+			}
+
+			// Parse transactions
+			var transactions []map[string]interface{}
+			var txData map[string]interface{}
+			if err := json.Unmarshal(txResponse.Data, &txData); err == nil {
+				if txArray, ok := txData["transactions"].([]interface{}); ok {
+					for _, tx := range txArray {
+						if txMap, ok := tx.(map[string]interface{}); ok {
+							transactions = append(transactions, txMap)
+						}
+					}
+				}
+			}
+
+			// Generate balance trend chart
+			chartData := generateBalanceTrendFromTransactions(transactions, currentBalance, params.Days)
+
+			// Generate SVG image
+			svgContent := generateSVGChart(chartData)
+			
+			// Save to charts directory
+			chartsDir := filepath.Join(".", "charts")
+			timestamp := time.Now().Format("20060102-150405")
+			filename := fmt.Sprintf("balance-trend-%s.svg", timestamp)
+			filePath := filepath.Join(chartsDir, filename)
+			
+			if err := os.WriteFile(filePath, []byte(svgContent), 0644); err != nil {
+				log.Printf("Failed to save chart to file: %v", err)
+				return &core.ToolResult{
+					Success: false,
+					Error:   fmt.Sprintf("failed to save chart: %v", err),
+				}, nil
+			}
+			
+			log.Printf("Chart saved to: %s", filePath)
+
+			// Get server port from environment
+			port := os.Getenv("PORT")
+			if port == "" {
+				port = "8080"
+			}
+			
+			// Create HTTP URL for the chart
+			chartURL := fmt.Sprintf("http://localhost:%s/charts/%s", port, filename)
+
+			result := map[string]interface{}{
+				"chart_type":   "line",
+				"data_type":    "balance_trend",
+				"image_url":    chartURL,
+				"file_path":    filePath,
+				"total_points": len(transactions),
+				"message":      fmt.Sprintf("Generated balance trend chart with %d data points. View at: %s", len(transactions), chartURL),
+			}
+
+			return &core.ToolResult{
+				Success: true,
+				Data:    result,
+			}, nil
+		}).
+		Build()
 }
 
 // ============================================================================
@@ -1087,3 +1537,294 @@ func categorizeNote(note string) string {
 //     - Suggest automated savings plan
 //
 // ============================================================================
+
+// ============================================================================
+// LANGGRAPH-STYLE WORKFLOW SYSTEM
+// ============================================================================
+// Stateful workflow graph for building complex agent workflows
+
+// Node represents a single step in the agent workflow graph
+type Node struct {
+	Name    string
+	Handler func(ctx context.Context, state *GraphState) error
+}
+
+// GraphState holds the current state as the graph executes
+type GraphState struct {
+	Messages     []string
+	CurrentTool  string
+	ToolResult   interface{}
+	UserID       string
+	Conversation map[string]interface{}
+	Error        error
+}
+
+// Graph represents a stateful workflow for the agent
+type Graph struct {
+	Nodes       map[string]*Node
+	Edges       map[string][]string // node -> next possible nodes
+	StartNode   string
+	CurrentNode string
+	State       *GraphState
+}
+
+// NewGraph creates a new agent workflow graph
+func NewGraph() *Graph {
+	return &Graph{
+		Nodes: make(map[string]*Node),
+		Edges: make(map[string][]string),
+		State: &GraphState{
+			Messages:     []string{},
+			Conversation: make(map[string]interface{}),
+		},
+	}
+}
+
+// AddNode adds a node to the graph
+func (g *Graph) AddNode(name string, handler func(ctx context.Context, state *GraphState) error) {
+	g.Nodes[name] = &Node{
+		Name:    name,
+		Handler: handler,
+	}
+}
+
+// AddEdge adds a directed edge from one node to another
+func (g *Graph) AddEdge(from, to string) {
+	g.Edges[from] = append(g.Edges[from], to)
+}
+
+// SetStart sets the starting node
+func (g *Graph) SetStart(nodeName string) {
+	g.StartNode = nodeName
+	g.CurrentNode = nodeName
+}
+
+// Execute runs the graph starting from the start node
+func (g *Graph) Execute(ctx context.Context, userID string) error {
+	g.State.UserID = userID
+	g.CurrentNode = g.StartNode
+
+	visited := make(map[string]bool)
+
+	for g.CurrentNode != "" {
+		// Prevent infinite loops
+		if visited[g.CurrentNode] {
+			return fmt.Errorf("cycle detected at node: %s", g.CurrentNode)
+		}
+		visited[g.CurrentNode] = true
+
+		node, exists := g.Nodes[g.CurrentNode]
+		if !exists {
+			return fmt.Errorf("node not found: %s", g.CurrentNode)
+		}
+
+		log.Printf("Executing node: %s", node.Name)
+
+		// Execute the node handler
+		if err := node.Handler(ctx, g.State); err != nil {
+			g.State.Error = err
+			return err
+		}
+
+		// Move to next node
+		nextNodes := g.Edges[g.CurrentNode]
+		if len(nextNodes) == 0 {
+			// End of graph
+			break
+		}
+
+		// Simple routing: take the first edge
+		// In a real implementation, you'd use conditional routing
+		g.CurrentNode = nextNodes[0]
+	}
+
+	return nil
+}
+
+// ConditionalRouter determines which node to execute next based on state
+func (g *Graph) ConditionalRouter(condition func(state *GraphState) string) {
+	// This would be used to route to different nodes based on conditions
+	// Example: if balance < 0, go to "overdraft_warning" node
+	// else go to "normal_response" node
+}
+
+// CreateFinancialAgentGraph creates an example financial agent workflow graph
+func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
+	graph := NewGraph()
+
+	// Root Node: Orchestrator - coordinates the entire workflow
+	graph.AddNode("orchestrator", func(ctx context.Context, state *GraphState) error {
+		log.Println("Orchestrator: Analyzing request and routing to appropriate handler...")
+		// The orchestrator analyzes the user's request and routes to the correct first-layer node
+		// In a real implementation, this would use Claude to classify the request type
+		
+		// Example routing logic (would be replaced with actual classification)
+		userInput := state.Conversation["user_input"].(string)
+		
+		if strings.Contains(userInput, "image") || strings.Contains(userInput, "receipt") || strings.Contains(userInput, "split") {
+			state.Conversation["route"] = "image_payment"
+			log.Println("💙💙💙💙💙💙💙💙💙💙💙💙💙")
+		} else if strings.Contains(userInput, "broke") || strings.Contains(userInput, "help") || 
+			strings.Contains(userInput, "stats") || strings.Contains(userInput, "investing") || 
+			strings.Contains(userInput, "saving") {
+			state.Conversation["route"] = "financial_help"
+			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
+			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
+			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
+		} else {
+			state.Conversation["route"] = "general_inquiry"
+			log.Println("🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏")
+		}
+		
+		return nil
+	})
+
+	// FIRST LAYER NODES - Three specialized handlers
+
+	// Node 1: General Inquiry - handles standard queries using model's default functions
+	graph.AddNode("general_inquiry", func(ctx context.Context, state *GraphState) error {
+		log.Println("General Inquiry: Processing standard request...")
+		// Use Claude's default capabilities for general questions
+		// Check balance, view transactions, search users, etc.
+		state.Conversation["handler_type"] = "general"
+		state.Conversation["intent"] = "standard_query"
+		
+		// Check if user is asking for a chart/graph/balance trend
+		userInput := state.Conversation["user_input"].(string)
+		lowerInput := strings.ToLower(userInput)
+		
+		if strings.Contains(lowerInput, "chart") || strings.Contains(lowerInput, "graph") || 
+			strings.Contains(lowerInput, "visualize") || strings.Contains(lowerInput, "plot") ||
+			strings.Contains(lowerInput, "trend") || strings.Contains(lowerInput, "balance") && (strings.Contains(lowerInput, "show") || strings.Contains(lowerInput, "see")) {
+			log.Println("📊 Detected balance trend chart request")
+			state.Conversation["chart_requested"] = true
+		}
+		
+		return nil
+	})
+
+	// Node 2: Image Payment - handles receipt splitting and image-based payments
+	graph.AddNode("image_payment", func(ctx context.Context, state *GraphState) error {
+		log.Println("Image Payment: Processing receipt/image for payment splitting...")
+		// Use Claude vision to analyze receipt images
+		// Extract amounts, calculate splits, identify friends to pay
+		state.Conversation["handler_type"] = "image_payment"
+		state.CurrentTool = "process_receipt_image"
+		
+		// Example: Parse receipt and determine split amounts
+		state.ToolResult = map[string]interface{}{
+			"total_amount": 50.00,
+			"split_count":  2,
+			"per_person":   25.00,
+			"currency":     "USD",
+			"recipients":   []string{"@alice", "@bob"},
+		}
+		return nil
+	})
+
+	// Node 3: Financial Help (Get Stats) - provides financial insights and recommendations
+	graph.AddNode("financial_help", func(ctx context.Context, state *GraphState) error {
+		log.Println("Financial Help: Analyzing financial situation and providing guidance...")
+		// Analyze user's financial health
+		// Provide saving/investing recommendations
+		// Show spending patterns, suggest improvements
+		state.Conversation["handler_type"] = "financial_help"
+		state.CurrentTool = "analyze_financial_health"
+		
+		// Example: Generate financial insights
+		state.ToolResult = map[string]interface{}{
+			"spending_velocity": "high",
+			"savings_rate":      "low",
+			"recommendations": []string{
+				"Set up automatic savings of $50/week",
+				"Reduce dining out expenses by 20%",
+				"Consider moving $500 to savings vault for 4% APY",
+			},
+		}
+		return nil
+	})
+
+	// SECOND LAYER NODES - Processing nodes
+
+	// Execute tool based on first layer routing
+	graph.AddNode("execute_tool", func(ctx context.Context, state *GraphState) error {
+		log.Println("Executing tool based on handler type...")
+		handlerType := state.Conversation["handler_type"].(string)
+		
+		switch handlerType {
+		case "image_payment":
+			// Process payment splitting
+			log.Println("Processing payment splits from receipt...")
+		case "financial_help":
+			// Fetch and analyze financial data
+			log.Println("Fetching financial stats and generating recommendations...")
+		case "general":
+			// Handle standard queries
+			log.Println("Processing general query...")
+		}
+		
+		return nil
+	})
+
+	// Generate final response
+	graph.AddNode("generate_response", func(ctx context.Context, state *GraphState) error {
+		log.Println("Generating final response...")
+		handlerType := state.Conversation["handler_type"].(string)
+		
+		var response string
+		switch handlerType {
+		case "image_payment":
+			result := state.ToolResult.(map[string]interface{})
+			response = fmt.Sprintf("I analyzed the receipt. Total: $%.2f. I can split this %d ways ($%.2f each) and send to %v. Ready to proceed?",
+				result["total_amount"], result["split_count"], result["per_person"], result["recipients"])
+		case "financial_help":
+			result := state.ToolResult.(map[string]interface{})
+			recommendations := result["recommendations"].([]string)
+			response = fmt.Sprintf("I analyzed your finances. Here's what I found:\n- Spending: %s\n- Savings: %s\n\nRecommendations:\n",
+				result["spending_velocity"], result["savings_rate"])
+			for _, rec := range recommendations {
+				response += fmt.Sprintf("• %s\n", rec)
+			}
+		case "general":
+			response = "I can help you with that. Let me check your account..."
+		}
+		
+		state.Messages = append(state.Messages, response)
+		return nil
+	})
+
+	// Define the workflow edges
+	// Orchestrator routes to one of three first-layer nodes
+	graph.AddEdge("orchestrator", "general_inquiry")
+	graph.AddEdge("orchestrator", "image_payment")
+	graph.AddEdge("orchestrator", "financial_help")
+	
+	// All first-layer nodes converge to execute_tool
+	graph.AddEdge("general_inquiry", "execute_tool")
+	graph.AddEdge("image_payment", "execute_tool")
+	graph.AddEdge("financial_help", "execute_tool")
+	
+	// Execute tool leads to response generation
+	graph.AddEdge("execute_tool", "generate_response")
+
+	// Set orchestrator as the starting point
+	graph.SetStart("orchestrator")
+
+	return graph
+}
+
+// RunGraphExample demonstrates how to use the graph workflow
+func RunGraphExample(liminalExecutor core.ToolExecutor) {
+	graph := CreateFinancialAgentGraph(liminalExecutor)
+
+	ctx := context.Background()
+	userID := "example-user-123"
+
+	if err := graph.Execute(ctx, userID); err != nil {
+		log.Printf("Graph execution failed: %v", err)
+		return
+	}
+
+	log.Println("Graph execution completed successfully")
+	log.Printf("Final state messages: %v", graph.State.Messages)
+}
