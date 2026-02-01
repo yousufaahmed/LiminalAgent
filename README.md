@@ -2,7 +2,7 @@
 
 A complete financial management platform combining AI-powered conversation, real-time banking integration, intelligent receipt scanning with image upload, and advanced visualization. Built with Go backend, React frontend, and TabScanner API integration.
 
-![Application Overview](examples/hackathon-starter/imgs/Screenshot%202026-02-01%20084736.png)
+![Application Overview](nim-go-sdk/examples/hackathon-starter/imgs/Screenshot%202026-02-01%20084736.png)
 
 ## ✨ Features
 
@@ -38,7 +38,7 @@ A complete financial management platform combining AI-powered conversation, real
 - **2-Decimal Precision**: All monetary values formatted to 2 decimal places
 - **Responsive Layout**: Right-aligned "Remaining" section, balanced UI design
 
-![Gauge Meter & Visualization](examples/hackathon-starter/imgs/Screenshot%202026-02-01%20052704.png)
+![Gauge Meter & Visualization](nim-go-sdk/examples/hackathon-starter/imgs/Screenshot%202026-02-01%20052704.png)
 
 ## 🏗️ Complete Project Structure
 
@@ -207,7 +207,7 @@ Agent: [Displays categorized breakdown with percentages]
 
 ### Uploading and Processing Receipts
 
-![Receipt Upload & Processing](examples/hackathon-starter/imgs/WhatsApp%20Image%202026-02-01%20at%2010.21.11.jpeg)
+![Receipt Upload & Processing](nim-go-sdk/examples/hackathon-starter/imgs/WhatsApp%20Image%202026-02-01%20at%2010.21.11.jpeg)
 
 **Step 1: Upload Receipt Image**
 1. Click the camera button (📷) in the bottom right corner
