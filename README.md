@@ -2,6 +2,9 @@
 
 A complete financial management platform combining AI-powered conversation, real-time banking integration, intelligent receipt scanning with image upload, and advanced visualization. Built with Go backend, React frontend, and TabScanner API integration.
 
+<img width="2545" height="1346" alt="image" src="https://github.com/user-attachments/assets/6b31c1fd-43ef-4eaf-a946-db29b272dbb6" />
+
+
 ![Application Overview](nim-go-sdk/examples/hackathon-starter/imgs/Screenshot%202026-02-01%20084736.png)
 
 ## ✨ Features
