@@ -2,6 +2,8 @@
 
 A complete financial management platform combining AI-powered conversation, real-time banking integration, intelligent receipt scanning with image upload, and advanced visualization. Built with Go backend, React frontend, and TabScanner API integration.
 
+![Application Overview](imgs/Screenshot%202026-02-01%20084736.png)
+
 ## ✨ Features
 
 ### 🏦 Financial Management
@@ -35,6 +37,8 @@ A complete financial management platform combining AI-powered conversation, real
 - **Spending Categories Bubble Chart**: Interactive visualization of spending by category
 - **2-Decimal Precision**: All monetary values formatted to 2 decimal places
 - **Responsive Layout**: Right-aligned "Remaining" section, balanced UI design
+
+![Gauge Meter & Visualization](imgs/Screenshot%202026-02-01%20052704.png)
 
 ## 🏗️ Complete Project Structure
 
@@ -202,6 +206,8 @@ Agent: [Displays categorized breakdown with percentages]
 - Process receipts: "Process this receipt", "Split this bill"
 
 ### Uploading and Processing Receipts
+
+![Receipt Upload & Processing](imgs/WhatsApp%20Image%202026-02-01%20at%2010.21.11.jpeg)
 
 **Step 1: Upload Receipt Image**
 1. Click the camera button (📷) in the bottom right corner
