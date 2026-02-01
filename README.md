@@ -7,9 +7,6 @@ A complete financial management platform combining AI-powered conversation, real
 
 
 
-<img width="434" height="661" alt="Screenshot 2026-02-01 113020" src="https://github.com/user-attachments/assets/a4f9a65f-8e3c-4f41-aaf4-36c04566ca5d" />
-
-
 
 ## ✨ Features
 
@@ -106,6 +103,9 @@ hackathon-starter/
 │
 └── README.md                        # This file
 ```
+
+
+<img width="434" height="661" alt="Screenshot 2026-02-01 113020" src="https://github.com/user-attachments/assets/a4f9a65f-8e3c-4f41-aaf4-36c04566ca5d" />
 
 ## 🚀 Quick Start
 
