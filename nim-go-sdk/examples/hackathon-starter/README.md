@@ -1,543 +1,777 @@
-# 💜 Liminal Vibe Banking Hackathon Starter
+# Liminal Agentic AI - Financial Management Platform
 
-**Build AI-powered financial tools with real stablecoin banking APIs in minutes.**
+A comprehensive AI-powered financial management platform combining intelligent budget tracking, spending analysis, receipt scanning, and conversational banking powered by Liminal's banking APIs and AI agents.
 
-This starter project gives you everything you need to create intelligent financial agents powered by Claude AI and Liminal's banking platform. No complex setup, no mock data — just real banking tools and a beautiful chat interface.
+## 🌟 Features
 
----
+### 💰 Financial Management
+- **Real-time Banking Integration**: Connect to Liminal banking APIs for live transaction data
+- **Budget Tracking**: Set and monitor weekly spending goals
+- **Spending Categories**: Automatic transaction categorization (Food, Travel, Subscriptions, etc.)
+- **Transaction Analysis**: Smart merchant detection and spending pattern analysis
+- **Balance Monitoring**: Real-time account balance tracking
 
-## 🎯 What You'll Build
+### 🤖 AI Agent
+- **Conversational Banking**: Natural language financial assistant
+- **Intelligent Insights**: AI-powered spending analysis and recommendations
+- **Multi-turn Conversations**: Contextual understanding across interactions
+- **Custom Tools**: Extensible tool system for banking operations
 
-Create conversational AI agents that can:
+### 📸 Receipt Scanner
+- **Camera Integration**: Capture receipts directly from your camera
+- **Advanced OCR**: Donut model for structured receipt understanding
+- **Image Preprocessing**: CLAHE, denoising, and adaptive thresholding for better accuracy
+- **Structured Extraction**: Automatic parsing of items, prices, and totals
 
-- 💰 **Check balances** across wallet and savings accounts
-- 📊 **Analyze spending** patterns and provide insights
-- 💸 **Send money** to other users (with confirmation)
-- 🏦 **Manage savings** deposits and withdrawals
-- 📈 **Track transactions** and financial history
-- 🎯 **Set weekly spending goals** with real-time progress tracking
-- 🤖 **Custom analytics** - the sky's the limit!
+### 📊 Data Visualization
+- **Spending Categories Bubble Chart**: Visual representation of spending by category
+- **Interactive Dashboard**: Real-time updates via WebSocket
+- **Responsive UI**: Modern React-based interface with smooth animations
 
-All through natural conversation in a beautiful chat interface.
+## 🏗️ Project Structure
 
----
+```
+LiminalAgenticAI/
+├── nim-go-sdk/                       # Go backend service
+│   └── examples/hackathon-starter/
+│       ├── main.go                   # Main server with banking tools
+│       ├── .env                      # Backend configuration
+│       └── frontend/                 # React frontend
+│           ├── main.tsx              # App entry point
+│           ├── SpendingCategories.tsx # Spending visualization
+│           ├── styles.css            # Global styles
+│           └── package.json          # Frontend dependencies
+│
+├── receipt.py                        # Receipt scanner with OCR
+├── agent.py                          # LangGraph agent (optional)
+├── tools.py                          # Custom agent tools
+├── config.py                         # Configuration management
+├── requirements.txt                  # Python dependencies
+└── README.md                         # This file
+```
 
-## 🚀 5-Minute Quickstart
+## 🚀 Quick Start
 
 ### Prerequisites
 
-- **Go 1.21+** installed ([Download](https://go.dev/dl/))
-- **Node.js 18+** installed ([Download](https://nodejs.org/))
-- **Anthropic API key** ([Get one](https://console.anthropic.com/))
+- **Go 1.21+** (for backend)
+- **Node.js 18+** (for frontend)
+- **Python 3.9+** (for receipt scanner)
+- **Anthropic API Key** (for AI agent)
+- **Liminal API Access** (for banking features)
 
-### Step 1: Clone and Setup
+### 1. Backend Setup (Go)
 
 ```bash
-# Clone the repository
-git clone https://github.com/becomeliminal/nim-go-sdk.git
 cd nim-go-sdk/examples/hackathon-starter
 
-# Copy environment template
-cp .env.example .env
-```
+# Create .env file
+cat > .env << EOL
+ANTHROPIC_API_KEY=your_anthropic_key_here
+LIMINAL_BASE_URL=https://api.liminal.cash
+PORT=8080
+EOL
 
-### Step 2: Add Your Anthropic API Key
+# Install dependencies
+go mod download
 
-Edit `.env` and add your Anthropic key:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-your-key-here
-```
-
-That's it! Liminal authentication is automatic via the login flow in the chat interface.
-
-### Step 3: Start the Backend
-
-```bash
-# Install Go dependencies
-go mod tidy
-
-# Run the server
+# Run backend
 go run main.go
 ```
 
-You should see:
-```
-✅ Liminal API configured
-✅ Added 9 Liminal banking tools
-✅ Added custom spending analyzer and weekly goal tools
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 Hackathon Starter Server Running
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📡 WebSocket endpoint: ws://localhost:8080/ws
-💚 Health check: http://localhost:8080/health
-```
+Backend will start on `http://localhost:8080`
 
-### Step 4: Start the Frontend
-
-In a new terminal:
+### 2. Frontend Setup (React)
 
 ```bash
-cd frontend
+cd nim-go-sdk/examples/hackathon-starter/frontend
 
 # Install dependencies
 npm install
 
-# Start dev server
+# Run development server
 npm run dev
 ```
 
-Your browser will open to `http://localhost:5173` with a beautiful chat interface!
+Frontend will start on `http://localhost:5173`
 
-### Step 5: Login and Try It Out!
+### 3. Receipt Scanner Setup (Python)
 
-Click the chat bubble, then:
+```bash
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-1. **Login** with your email (you'll get an OTP code)
-2. Enter the code to authenticate
-3. Start chatting! Try:
-   - "What's my balance?"
-   - "Show me my recent transactions"
-   - "Analyze my spending over the last 30 days"
+# Install dependencies
+pip install -r requirements.txt
 
-Authentication is automatic from this point forward - JWT tokens are managed under the hood.
-
----
-
-## 🔑 Getting Your Anthropic API Key
-
-1. Go to [console.anthropic.com](https://console.anthropic.com/)
-2. Sign up or log in
-3. Navigate to API Keys
-4. Create a new key
-5. Copy the key (starts with `sk-ant-`)
-6. Add it to your `.env` file
-
-### Liminal Authentication
-
-**No API key needed!** Liminal authentication works automatically:
-
-1. When you first use the chat, you'll see a login screen
-2. Enter your email address
-3. Check your email for a one-time code (OTP)
-4. Enter the code to authenticate
-5. That's it! Your session is authenticated via JWT tokens managed automatically
-
-The SDK handles all JWT token management, extraction, and refreshing under the hood. You never need to manually manage Liminal credentials.
-
----
-
-## 📁 Project Structure
-
-```
-hackathon-starter/
-├── main.go              # Backend server with AI agent
-│   ├── Configuration    # Environment variables
-│   ├── Liminal Tools    # 9 banking tools (balance, transactions, etc.)
-│   ├── Custom Tools     # Weekly spending goal tracker & analyzer
-│   └── System Prompt    # AI personality and behavior
-│
-├── frontend/            # React chat interface
-│   ├── main.tsx         # App entry point with nim-chat & progress widget
-│   ├── styles.css       # Custom styles for progress bar
-│   ├── index.html       # Beautiful landing page
-│   ├── package.json     # Dependencies
-│   └── vite.config.ts   # Build configuration
-│
-├── .env.example         # Environment template
-├── .env                 # Your actual keys (don't commit!)
-├── go.mod               # Go dependencies
-├── WEEKLY_GOAL_USAGE.md # Weekly goal feature documentation
-└── README.md            # This file
+# Run receipt scanner
+python receipt.py
 ```
 
----
+## 📋 Detailed Setup
 
-## 🛠️ Built-in Liminal Banking Tools
+### Backend Configuration (.env)
 
-Your AI agent has access to **9 core banking tools** plus **custom analytics tools** out of the box:
+```bash
+# Required
+ANTHROPIC_API_KEY=sk-ant-xxx          # Your Anthropic API key
+LIMINAL_BASE_URL=https://api.liminal.cash
 
-### Read Operations (No Confirmation)
+# Optional
+PORT=8080                              # Backend server port
+EMAIL_FROM=your-email@outlook.com      # For notifications (optional)
+EMAIL_PASSWORD=your-app-password       # Outlook app password (optional)
+```
 
-| Tool | Description | Example Query |
-|------|-------------|---------------|
-| `get_balance` | Check wallet balance | "What's my balance?" |
-| `get_savings_balance` | Check savings positions & APY | "How much is in my savings?" |
-| `get_vault_rates` | Get current savings rates | "What's the APY for savings?" |
-| `get_transactions` | View transaction history | "Show my recent transactions" |
-| `get_profile` | Get user profile info | "What's my display tag?" |
-| `search_users` | Find users by display tag | "Search for @alice" |
-| `analyze_spending` | Analyze spending patterns & trends | "Analyze my spending" |
-| `get_weekly_spending_progress` | Check weekly goal progress | "How am I doing this week?" |
+### Frontend Configuration
 
-### Write Operations (Require Confirmation)
+The frontend automatically connects to the backend WebSocket at `ws://localhost:8080/ws`.
 
-| Tool | Description | Example Query |
-|------|-------------|---------------|
-| `send_money` | Send money to another user | "Send $50 to @alice" |
-| `deposit_savings` | Deposit funds into savings | "Put $100 in savings" |
-| `withdraw_savings` | Withdraw funds from savings | "Withdraw $50 from savings" |
-| `spend_weekly_goal` | Set weekly spending goal | "Set my weekly spend to 5 LIL" |
+To change the backend URL, modify [main.tsx](nim-go-sdk/examples/hackathon-starter/frontend/main.tsx):
 
-All write operations require explicit user confirmation through the chat interface. The UI will show a countdown timer and summary before executing.
+```typescript
+const wsUrl = 'ws://your-backend:8080/ws';
+```
 
----
+### Python Dependencies
 
-## 🎨 Adding Custom Tools
+Key packages for receipt scanner:
+- `transformers` - Donut OCR model
+- `torch` - PyTorch for model inference
+- `opencv-python` - Image processing
+- `Pillow` - Image enhancement
+- `protobuf` - Model serialization
+- `sentencepiece` - Tokenization
 
-This is where your hackathon magic happens! The starter includes:
-- **Spending Analyzer** - Analyzes transaction patterns, velocity, and trends
-- **Weekly Spending Goal** - Sets goals with confirmation and tracks progress in real-time with a visual progress bar widget
+## 💡 Usage Guide
 
-Here's how to add your own tools:
+### Using the Financial Agent
 
-### 1. Define Your Tool
+**Chat Interface:**
+```
+User: "What's my current balance?"
+Agent: "Your balance is $1,250.00"
 
-In `main.go`, add a new tool after the existing ones:
+User: "Set a weekly spending goal of $200"
+Agent: "✓ Weekly spending goal set to $200.00"
+
+User: "Show my spending by category"
+Agent: [Displays categorized spending breakdown]
+```
+
+**Available Commands:**
+- Check balance
+- View recent transactions
+- Set weekly spending goals
+- Get spending progress
+- Analyze spending by category
+- View spending trends
+
+### Using the Receipt Scanner
+
+**Option 1: Camera Capture**
+```bash
+python receipt.py
+# Choose option 1
+# Press SPACE to capture
+# Press ESC to exit
+```
+
+**Option 2: Load from File**
+```bash
+python receipt.py
+# Choose option 2
+# Enter image path: /path/to/receipt.jpg
+```
+
+**Output:**
+- Extracted text display in terminal
+- Structured data saved to `receipt_output.json`
+- Parsed items, quantities, and prices
+
+### Viewing Spending Categories
+
+1. Open frontend: `http://localhost:5173`
+2. View the spending categories bubble chart
+3. Hover over bubbles for detailed breakdown
+4. Categories automatically update from backend
+
+## 🛠️ Backend Tools
+
+### Banking Tools
+- `get_balance` - Retrieve current account balance
+- `get_transactions` - Fetch transaction history
+- `categorize_transactions` - Categorize spending by type
+
+### Budget Tools
+- `set_weekly_spending_goal` - Set weekly budget limit
+- `get_weekly_spending_progress` - Track goal progress
+
+### Custom Tool Implementation
+
+Add new tools in [main.go](nim-go-sdk/examples/hackathon-starter/main.go):
 
 ```go
-// Add your custom tool
-srv.AddTool(createBudgetTrackerTool(liminalExecutor))
-```
-
-### 2. Implement the Tool
-
-```go
-func createBudgetTrackerTool(liminalExecutor core.ToolExecutor) core.Tool {
-    return tools.New("track_budget").
-        Description("Track spending against a monthly budget and alert when approaching limits").
-        Schema(tools.ObjectSchema(map[string]interface{}{
-            "budget_amount": tools.StringProperty("Monthly budget amount (e.g., '1000')"),
-            "category": tools.StringProperty("Budget category (e.g., 'dining', 'entertainment')"),
-        }, "budget_amount")).
-        HandlerFunc(func(ctx context.Context, input json.RawMessage) (interface{}, error) {
-            // 1. Parse input
-            var params struct {
-                BudgetAmount string `json:"budget_amount"`
-                Category     string `json:"category"`
-            }
-            json.Unmarshal(input, &params)
-
-            // 2. Fetch transaction data
-            txRequest := map[string]interface{}{"limit": 100}
-            txRequestJSON, _ := json.Marshal(txRequest)
-            txResponse, _ := liminalExecutor.Execute(ctx, "get_transactions", txRequestJSON)
-
-            // 3. Analyze and compare to budget
-            spent := calculateCategorySpending(txResponse, params.Category)
-            budgetAmount, _ := strconv.ParseFloat(params.Budget Amount, 64)
-            percentUsed := (spent / budgetAmount) * 100
-
-            // 4. Return insights
-            return map[string]interface{}{
-                "budget":        params.BudgetAmount,
-                "spent":         fmt.Sprintf("%.2f", spent),
-                "remaining":     fmt.Sprintf("%.2f", budgetAmount - spent),
-                "percent_used":  fmt.Sprintf("%.1f%%", percentUsed),
-                "status":        getBudgetStatus(percentUsed),
-                "alert":         percentUsed > 80,
+func createMyCustomTool(liminalExec executor.Executor) *core.Tool {
+    return tools.NewBuilder().
+        WithName("my_custom_tool").
+        WithDescription("What this tool does").
+        WithParameter("param_name", tools.ParamTypeString, "Parameter description", true).
+        WithHandler(func(ctx context.Context, args map[string]interface{}) (*core.ToolResult, error) {
+            // Your implementation here
+            return &core.ToolResult{
+                Success: true,
+                Data: map[string]interface{}{
+                    "result": "value",
+                },
             }, nil
         }).
         Build()
 }
+
+// Register in main():
+agent.RegisterTool(createMyCustomTool(liminalExec))
 ```
 
-### 3. Update the System Prompt
+## 🎨 Frontend Customization
 
-Add your new tool to the system prompt in `main.go`:
+### Adding New Components
 
-```go
-const hackathonSystemPrompt = `You are Nim...
+Create in `frontend/` directory:
 
-CUSTOM ANALYTICAL TOOLS:
-- Analyze spending patterns (analyze_spending)
-- Set weekly spending goal (spend_weekly_goal) - requires confirmation
-- Check weekly spending progress (get_weekly_spending_progress)
-- Track budget goals (track_budget)  // <-- Add this
-...`
+```typescript
+import { useEffect, useState } from 'react';
+
+export function MyComponent({ wsUrl }: { wsUrl: string }) {
+  const [data, setData] = useState<any>(null);
+  
+  useEffect(() => {
+    const ws = new WebSocket(wsUrl);
+    
+    ws.onmessage = (event) => {
+      // Handle data
+    };
+    
+    return () => ws.close();
+  }, [wsUrl]);
+  
+  return <div>{/* Your UI */}</div>;
+}
 ```
 
-### 4. Test It
+### Styling
 
-Restart your backend and try:
-- "Track my dining budget of $500"
-- "Am I on track with my budget?"
+Global styles in [styles.css](nim-go-sdk/examples/hackathon-starter/frontend/styles.css).
 
----
+Component-specific styles using inline styles or CSS modules.
 
-## 💡 Hackathon Project Ideas
+## 📊 Receipt Scanner Details
 
-Here are some winning project ideas to inspire you:
+### Image Preprocessing Pipeline
 
-### 🎯 Beginner-Friendly
+1. **CLAHE**: Contrast Limited Adaptive Histogram Equalization
+2. **Denoising**: Fast Non-Local Means Denoising
+3. **Adaptive Thresholding**: Gaussian adaptive threshold
+4. **Sharpening**: PIL ImageEnhance sharpness boost
+5. **Contrast Enhancement**: PIL ImageEnhance contrast adjustment
 
-1. **Weekly Spending Goal Tracker** ✅ *Included in starter!*
-   - Set weekly spending limits with confirmation
-   - Real-time progress tracking with visual progress bar
-   - Automatic transaction analysis by date
-   - On-track status indicators and alerts
-   - See `WEEKLY_GOAL_USAGE.md` for implementation details
+### Supported Receipt Formats
 
-2. **Monthly Budget Tracker**
-   - Set budgets by category (dining, entertainment, etc.)
-   - Track spending against limits
-   - Alert when approaching budget caps
-   - Month-over-month comparisons
+- Store receipts (groceries, retail)
+- Restaurant bills
+- Service receipts
+- Invoice documents
 
-2. **Spending Category Analyzer**
-   - Automatically categorize transactions
-   - Show spending breakdown by category
-   - Month-over-month comparisons
+### Model Information
 
-3. **Spending Category Analyzer**
-   - Automatically categorize transactions
-   - Show spending breakdown by category
-   - Compare month-over-month
-   - Highlight unusual spending
+**Donut (Document Understanding Transformer)**
+- Model: `naver-clova-ix/donut-base-finetuned-cord-v2`
+- Task: Structured document parsing
+- Output: JSON with items, prices, store info
 
-4. **Bill Payment Reminder**
-   - Detect recurring payments
-   - Alert before bills are due
-   - Ensure sufficient balance
-   - Track payment history
+## 🔒 Security Considerations
 
-### 🚀 Intermediate
+### API Keys
+- Store all API keys in `.env` files
+- Never commit `.env` files to version control
+- Use environment variables in production
 
-5. **Smart Savings Advisor**
-   - Analyze "spare cash" available
-   - Recommend savings deposits
-   - Calculate interest projections
-   - Optimize for highest APY
+### Camera Permissions
+- macOS: Grant Terminal camera access in System Settings → Privacy & Security → Camera
+- Windows: Check Windows Security camera permissions
 
-6. **Cash Flow Forecaster**
-   - Predict future balance based on patterns
-   - Identify potential low-balance periods
-   - Suggest when to save vs. spend
-   - Warn before account goes negative
-
-7. **Financial Health Score**
-   - Calculate overall financial wellness
-   - Track improvements over time
-   - Compare to benchmarks
-   - Provide actionable recommendations
-
-### 🏆 Advanced
-
-8. **AI Budget Coach**
-   - Learn spending patterns with ML
-   - Provide personalized recommendations
-   - Automatically adjust budgets
-   - Gamify financial goals
-
-9. **Emergency Fund Builder**
-   - Calculate needed emergency fund size
-   - Create automated savings plan
-   - Track progress with milestones
-   - Adjust for income changes
-
-10. **Tax Obligation Tracker**
-   - Estimate tax liability on earnings
-   - Suggest amounts to set aside
-   - Generate tax reports
-   - Track deductible expenses
-
-11. **Peer Motivation System**
-    - Compare savings rate to anonymized peers
-    - Show percentile rankings
-    - Friendly competition features
-    - Social accountability
-
----
-
-## 🎤 Example Queries to Try
-
-### Balance & Account Info
-- "What's my balance?"
-- "How much do I have in savings?"
-- "What's the current APY?"
-- "Show me my profile"
-
-### Transactions & History
-- "Show my recent transactions"
-- "What did I spend yesterday?"
-- "Show me all payments to @alice"
-- "What's my biggest transaction this month?"
-
-### Money Movement
-- "Send $50 to @alice"
-- "Put $100 in savings"
-- "Withdraw $25 from savings"
-- "Pay @bob $30 for dinner"
-
-### Analysis & Insights
-- "Analyze my spending over the last 30 days"
-- "How much do I spend per day on average?"
-- "What's my spending velocity?"
-- "Am I saving enough?"
-
-### Weekly Spending Goals
-- "Set my weekly spend to 5 LIL"
-- "How am I doing on my weekly goal?"
-- "Check my weekly spending progress"
-- "Update my weekly budget to 10 LIL"
-
-### Custom Tool Examples
-- "Track my dining budget of $500"
-- "Set a savings goal for $10,000"
-- "Predict my balance next week"
-- "Calculate my financial health score"
-
----
-
-## 🎨 Customizing the AI Personality
-
-The `hackathonSystemPrompt` in `main.go` defines your AI agent's behavior. You can customize:
-
-### Tone & Style
-```go
-const hackathonSystemPrompt = `You are Nim, a [YOUR PERSONALITY HERE].
-
-// Examples:
-- "a sassy financial advisor who uses Gen Z slang"
-- "a professional wealth manager with 20 years experience"
-- "a supportive friend helping you build better money habits"
-- "a strict budget coach who holds you accountable"
-```
-
-### Expertise Focus
-```go
-// Focus on specific financial areas:
-- "You specialize in helping young professionals save for their first home"
-- "You're an expert in optimizing interest income from savings"
-- "You help people eliminate debt and build emergency funds"
-```
-
-### Interaction Style
-```go
-CONVERSATIONAL STYLE:
-- Use lots of emojis and be super friendly
-- Be brief and to-the-point, like a text message
-- Provide detailed explanations like a teacher
-- Use analogies and metaphors to explain concepts
-```
-
----
+### Banking API
+- Liminal API credentials should be secured
+- Use HTTPS in production
+- Implement rate limiting
 
 ## 🐛 Troubleshooting
 
-### Backend won't start
+### Backend Issues
 
-**Error:** `ANTHROPIC_API_KEY environment variable is required`
-- **Fix:** Make sure you created `.env` and added your Anthropic API key
+**"ANTHROPIC_API_KEY not found"**
+```bash
+# Create .env file in hackathon-starter directory
+echo "ANTHROPIC_API_KEY=your_key" > .env
+```
 
-**Error:** `address already in use :8080`
-- **Fix:** Another process is using port 8080. Change the PORT in `.env` or kill the other process
+**Port already in use**
+```bash
+# Change PORT in .env
+PORT=8081
+```
 
-### Frontend won't connect
+### Frontend Issues
 
-**Error:** `WebSocket connection failed`
-- **Fix:** Make sure the backend is running on port 8080
-- **Fix:** Check that the backend shows "WebSocket endpoint: ws://localhost:8080/ws"
+**WebSocket connection failed**
+- Ensure backend is running on port 8080
+- Check firewall settings
+- Verify WebSocket URL in main.tsx
 
-**Error:** `Module not found: '@becomeliminal/nim-chat'`
-- **Fix:** Run `npm install` in the frontend directory
-- **Fix:** Make sure `nim-chat` is built: `cd ../../../nim-chat && npm install && npm run build`
+### Receipt Scanner Issues
 
-### Authentication not working
+**"No module named 'cv2'"**
+```bash
+pip install opencv-python
+```
 
-**Can't login to Liminal:**
-1. Make sure you entered a valid email address
-2. Check your email (including spam folder) for the OTP code
-3. The code expires after a few minutes - request a new one if needed
-4. Contact a hackathon organizer if you're not receiving codes
+**Camera not opening**
+- Grant camera permissions to Terminal
+- Try different camera indices (code tries 0, 1, 2)
+- Use file input option instead
 
-**Anthropic API Key Invalid:**
-1. Check the key starts with `sk-ant-`
-2. Verify it's copied correctly with no extra spaces
-3. Check your Anthropic console for API key status
-4. Make sure your account has credits
+**Poor OCR accuracy**
+- Ensure good lighting
+- Hold receipt flat and steady
+- Use high-resolution camera
+- Clean receipt (no wrinkles)
 
----
+**Model loading slow**
+- First run downloads ~500MB model weights
+- Subsequent runs load from cache
+- Consider using GPU for faster inference
 
-## 🏆 Hackathon Tips
+## 📚 Architecture
 
-### What Makes a Great Project
+### System Flow
 
-1. **Solve a Real Problem** — Focus on actual financial pain points
-2. **Use Real Data** — Leverage the Liminal tools to analyze actual transactions
-3. **Be Conversational** — Make the AI feel natural and delightful
-4. **Add Unique Insights** — Don't just show data, provide analysis and recommendations
-5. **Polish the Experience** — Small UI/UX touches make a big difference
+```
+┌─────────────┐         ┌──────────────┐         ┌─────────────┐
+│   Frontend  │ ◄─WS──► │  Go Backend  │ ◄─API─► │   Liminal   │
+│   (React)   │         │   (Agent)    │         │   Banking   │
+└─────────────┘         └──────────────┘         └─────────────┘
+                              │
+                              │
+                        ┌─────▼──────┐
+                        │  Anthropic │
+                        │    Claude  │
+                        └────────────┘
 
-### Time Management (6-Hour Sprint)
+┌─────────────┐         ┌──────────────┐
+│   Camera    │ ───────►│   Receipt    │
+│             │         │   Scanner    │
+└─────────────┘         └──────────────┘
+                              │
+                        ┌─────▼──────┐
+                        │   Donut    │
+                        │    OCR     │
+                        └────────────┘
+```
 
-- **Hour 1:** Get setup working and understand the tools
-- **Hour 2-3:** Build your core custom tool
-- **Hour 4:** Test and refine the conversational experience
-- **Hour 5:** Polish UI and add delightful touches
-- **Hour 6:** Prepare demo and documentation
+### Backend Agent Flow
 
-### Demo Tips
+1. User message received via WebSocket
+2. Agent processes with Anthropic Claude
+3. Agent decides which tools to call
+4. Tools execute (banking API, calculations, etc.)
+5. Results returned to agent
+6. Agent formulates response
+7. Response sent to frontend
 
-- **Start with the problem:** "Have you ever struggled to track your budget?"
-- **Show real interaction:** Live demo the conversation, don't just show code
-- **Highlight the AI:** Show how it understands natural language and provides insights
-- **Show confirmation flow:** Demo money movement with the countdown UI
-- **End with impact:** "This helps people build better financial habits"
+### Data Storage
 
-### Common Pitfalls to Avoid
+- **In-Memory**: Weekly goals, notification tracking
+- **JSON Output**: Receipt scanner results
+- **No Database**: Stateless design for simplicity
 
-- ❌ Building too many features — focus on one thing done really well
-- ❌ Ignoring the system prompt — this is key to great UX
-- ❌ Not testing with real data — use your actual Liminal account
-- ❌ Over-engineering — simple solutions often win
-- ❌ Forgetting error handling — graceful failures impress judges
+## 🧪 Development
 
----
+### Running Tests
 
-## 📚 Additional Resources
+```bash
+# Backend tests
+cd nim-go-sdk/examples/hackathon-starter
+go test ./...
 
-### Documentation
+# Frontend tests
+cd frontend
+npm test
+```
 
-- [nim-go-sdk GitHub](https://github.com/becomeliminal/nim-go-sdk)
-- [nim-chat Widget](https://github.com/becomeliminal/nim-chat)
-- [Anthropic Claude API](https://docs.anthropic.com/)
-- [Liminal Platform](https://liminal.cash)
+### Building for Production
 
-### Getting Help
+**Backend:**
+```bash
+go build -o hackathon-agent main.go
+./hackathon-agent
+```
 
-- **Discord:** Join #hackathon-help channel
-- **Office Hours:** Check schedule in main hackathon channel
-- **Emergency:** Contact hackathon organizers directly
+**Frontend:**
+```bash
+cd frontend
+npm run build
+# Output in dist/ directory
+```
 
-### Example Projects
+### Development Tips
 
-Check out these examples in the repo:
-- `examples/basic` — Minimal nim-go-sdk server
-- `examples/full-agent` — Complete agent with all Liminal tools
-- `examples/custom-tools` — More custom tool examples
+- Use `go run main.go` for hot-reloading backend
+- Use `npm run dev` for hot-reloading frontend
+- Check browser console for WebSocket connection issues
+- Use verbose logging for debugging
 
----
+## 🎯 Use Cases
 
-## 🎉 Ready to Build!
+### Personal Finance Management
+- Track daily spending
+- Monitor budget adherence
+- Analyze spending patterns
+- Receipt organization
 
-You have everything you need:
-- ✅ Real banking APIs with live data
-- ✅ Claude AI for natural language understanding
-- ✅ Beautiful chat interface
-- ✅ Example custom tool to learn from
-- ✅ Clear documentation
+### Small Business
+- Expense tracking
+- Receipt digitization
+- Category-based reporting
+- Budget forecasting
 
-Now go build something amazing! 🚀
+### Financial Education
+- Learn banking API integration
+- Understand AI agents
+- Practice full-stack development
+- Explore OCR technology
 
-**Questions?** Ask in Discord or grab a hackathon organizer.
+## 🔮 Future Enhancements
 
-**Good luck!** 💜
+### Planned Features
+- [ ] Persistent database storage
+- [ ] User authentication
+- [ ] Multiple account support
+- [ ] Email notifications for budget alerts
+- [ ] PDF receipt export
+- [ ] Mobile app
+- [ ] Historical spending trends
+- [ ] Budget recommendations
+- [ ] Recurring expense detection
+- [ ] Bill payment reminders
 
----
+### Technical Improvements
+- [ ] GraphQL API
+- [ ] Redis caching
+- [ ] Docker containerization
+- [ ] Kubernetes deployment
+- [ ] CI/CD pipeline
+- [ ] E2E testing
+- [ ] Performance monitoring
+- [ ] Error tracking (Sentry)
+
+## 📖 API Reference
+
+### Backend WebSocket API
+
+**Connect:**
+```javascript
+const ws = new WebSocket('ws://localhost:8080/ws');
+```
+
+**Send Message:**
+```javascript
+ws.send(JSON.stringify({
+  type: 'user_message',
+  content: 'What is my balance?'
+}));
+```
+
+**Receive Response:**
+```javascript
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log(data.content);
+};
+```
+
+### Receipt Scanner API
+
+**Command Line:**
+```bash
+python receipt.py
+```
+
+**Programmatic:**
+```python
+from receipt import ReceiptScanner
+
+scanner = ReceiptScanner()
+receipt_data = scanner.process_receipt(pil_image)
+print(receipt_data)
+```
+
+## 🤝 Contributing
+
+Contributions welcome! Areas for contribution:
+
+- Additional spending categories
+- More banking tools
+- UI/UX improvements
+- Documentation enhancements
+- Bug fixes
+- Test coverage
+- Performance optimizations
 
 ## 📄 License
 
-MIT License - see [LICENSE](../../LICENSE) for details.
+This project is provided as-is for educational and commercial use.
 
-Built with 💜 by Liminal for the Vibe Banking Hackathon.
+## 🔗 Resources
+
+### Documentation
+- [Liminal API Docs](https://docs.liminal.cash)
+- [nim-go-sdk Documentation](nim-go-sdk/README.md)
+- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
+- [Anthropic Claude API](https://docs.anthropic.com/)
+
+### Related Projects
+- [Donut OCR Model](https://huggingface.co/naver-clova-ix/donut-base-finetuned-cord-v2)
+- [OpenCV Documentation](https://docs.opencv.org/)
+- [React Documentation](https://react.dev/)
+- [Go Documentation](https://go.dev/doc/)
+
+## 🙏 Acknowledgments
+
+- **Liminal** - Banking API and SDK
+- **Anthropic** - Claude AI model
+- **Naver Clova** - Donut OCR model
+- **Hugging Face** - Model hosting and transformers library
+
+## 📞 Support
+
+For issues and questions:
+- Check the [Troubleshooting](#-troubleshooting) section
+- Review [nim-go-sdk examples](nim-go-sdk/examples/)
+- Open an issue on GitHub
+
+---
+
+**Built with ❤️ for the Liminal Hackathon**
+
+Happy building! 🚀
+
+# Run a single interaction
+result = agent.run("What time is it?")
+print(result["messages"][-1].content)
+
+# Multi-turn conversation
+conversation_history = []
+result1 = agent.run("Calculate 10 + 5", conversation_history)
+conversation_history = result1["messages"]
+
+result2 = agent.run("Now multiply that by 2", conversation_history)
+print(result2["messages"][-1].content)
+```
+
+### Async Usage
+
+```python
+import asyncio
+from agent import Agent
+
+async def main():
+    agent = Agent()
+    result = await agent.arun("Tell me about Python")
+    print(result["messages"][-1].content)
+
+asyncio.run(main())
+```
+
+### Streaming Responses
+
+```python
+from agent import Agent
+
+agent = Agent()
+
+for state in agent.stream("Calculate 15 * 23"):
+    if "messages" in state:
+        # Process state updates
+        print(state)
+```
+
+## Creating Custom Tools
+
+Add new tools in [tools.py](tools.py):
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def my_custom_tool(input_param: str) -> str:
+    """
+    Description of what your tool does.
+    
+    Args:
+        input_param: Description of the parameter
+        
+    Returns:
+        Description of the return value
+    """
+    # Your tool implementation
+    return f"Processed: {input_param}"
+
+# Add to get_available_tools() function
+def get_available_tools() -> list:
+    return [
+        get_current_time,
+        calculate,
+        search_knowledge_base,
+        text_analysis,
+        my_custom_tool,  # Add your tool here
+    ]
+```
+
+## Customizing the Agent
+
+### Change the LLM Model
+
+Modify [config.py](config.py) or set environment variables:
+
+```python
+MODEL_NAME=gpt-4
+TEMPERATURE=0.5
+```
+
+### Modify the Graph Structure
+
+Edit the `_build_graph()` method in [agent.py](agent.py) to:
+- Add new nodes
+- Change edge conditions
+- Implement custom routing logic
+
+### Add Memory/Persistence
+
+Extend the `AgentState` TypedDict to include additional state:
+
+```python
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    user_context: dict  # Add custom state
+    iteration_count: int
+```
+
+## Architecture
+
+The agent uses LangGraph's StateGraph with the following flow:
+
+```
+Entry → Agent (LLM) → Decision
+                        ├─→ Tools (if tool calls needed) → Agent
+                        └─→ End (if response complete)
+```
+
+1. **Agent Node**: Calls the LLM with current state
+2. **Decision**: Checks if tools need to be called
+3. **Tools Node**: Executes requested tools
+4. **Loop**: Returns to agent with tool results
+5. **End**: Returns final response
+
+## Configuration Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | Required | Your OpenAI API key |
+| `MODEL_NAME` | `gpt-4o-mini` | OpenAI model to use |
+| `TEMPERATURE` | `0.7` | Sampling temperature (0-2) |
+| `MAX_ITERATIONS` | `10` | Max agent iterations |
+| `VERBOSE` | `true` | Enable verbose logging |
+
+## Troubleshooting
+
+### "OPENAI_API_KEY not found" Error
+
+Make sure you've created a `.env` file with your API key:
+```
+OPENAI_API_KEY=sk-...
+```
+
+### Import Errors
+
+Ensure all dependencies are installed:
+```bash
+pip install -r requirements.txt
+```
+
+### Tool Not Working
+
+Verify the tool is:
+1. Decorated with `@tool`
+2. Has a clear docstring
+3. Added to `get_available_tools()` list
+
+## Advanced Features
+
+### Adding Checkpointing
+
+For persistence across sessions, integrate LangGraph's checkpointing:
+
+```python
+from langgraph.checkpoint.memory import MemorySaver
+
+memory = MemorySaver()
+self.graph = workflow.compile(checkpointer=memory)
+```
+
+### Human-in-the-Loop
+
+Add approval nodes for sensitive operations:
+
+```python
+workflow.add_node("human_approval", human_approval_node)
+workflow.add_edge("tools", "human_approval")
+workflow.add_edge("human_approval", "agent")
+```
+
+## Examples
+
+See [main.py](main.py) for complete examples including:
+- Basic single-turn interactions
+- Multi-turn conversations with context
+- Streaming responses
+- Error handling
+
+## Contributing
+
+Feel free to extend this template with:
+- Additional tools
+- Different LLM providers
+- Enhanced state management
+- Custom routing logic
+- Memory systems
+
+## License
+
+This template is provided as-is for educational and commercial use.
+
+## Resources
+
+- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
+- [LangChain Documentation](https://python.langchain.com/)
+- [OpenAI API Documentation](https://platform.openai.com/docs/)
+
+## Next Steps
+
+1. Add your custom tools
+2. Integrate with your data sources
+3. Implement domain-specific logic
+4. Add error handling and retry logic
+5. Deploy to production environment
+
+Happy building! 🚀
