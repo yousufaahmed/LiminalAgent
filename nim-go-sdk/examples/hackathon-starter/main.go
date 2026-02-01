@@ -5,14 +5,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/becomeliminal/nim-go-sdk/core"
@@ -22,6 +28,18 @@ import (
 	"github.com/joho/godotenv"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
+)
+
+// APY History Tracker - stores last 30 days of APY values
+var (
+	apyHistory = []float64{
+		6.32, 6.31, 6.30, 6.29, 6.28, 6.30, 6.27, 6.26, 6.25, 6.24,
+		6.26, 6.28, 6.27, 6.25, 6.23, 6.22, 6.24, 6.26, 6.25, 6.24,
+		6.22, 6.21, 6.23, 6.24, 6.26, 6.27, 6.28, 6.27, 6.26, 6.25,
+	}
+	apyMutex       sync.Mutex
+	uploadedImages = make(map[string]string) // Store uploaded receipt images
+	lastAPYValue   float64 = 6.25
 )
 
 func main() {
@@ -114,13 +132,14 @@ func main() {
 	srv.AddTool(createCategorizeTransactionTool(liminalExecutor))
 	srv.AddTool(createChartGeneratorTool(liminalExecutor))
 	srv.AddTool(createCalendarReminderTool(liminalExecutor))
+	srv.AddTool(createReceiptProcessorTool(liminalExecutor))
 	
 	// ============================================================================
 	// INITIALIZE LANGGRAPH ORCHESTRATOR
 	// ============================================================================
 	// Create the graph workflow and add it as a tool
 	srv.AddTool(createGraphOrchestratorTool(liminalExecutor))
-	log.Println("✅ Added custom tools with LangGraph orchestrator")
+	log.Println("✅ Added custom tools with LangGraph orchestrator + receipt processor")
 
 	// TODO: Add more custom tools here!
 	// Examples:
@@ -150,6 +169,61 @@ func main() {
 		filepath := filepath.Join(chartsDir, filename)
 		
 		http.ServeFile(w, r, filepath)
+	})
+
+	// Upload receipt endpoint
+	http.HandleFunc("/upload-receipt", func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		
+		// Parse multipart form
+		err := r.ParseMultipartForm(10 << 20) // 10 MB max
+		if err != nil {
+			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+			return
+		}
+		
+		file, _, err := r.FormFile("image")
+		if err != nil {
+			http.Error(w, "Failed to get image", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		
+		// Read file content
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Failed to read image", http.StatusInternalServerError)
+			return
+		}
+		
+		// Convert to base64
+		base64Image := base64.StdEncoding.EncodeToString(fileBytes)
+		
+		// Store in a temporary map (in production, use proper session storage)
+		if uploadedImages == nil {
+			uploadedImages = make(map[string]string)
+		}
+		imageID := fmt.Sprintf("img_%d", time.Now().UnixNano())
+		uploadedImages[imageID] = base64Image
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"imageId": imageID,
+			"message": "Image uploaded successfully. Ask the assistant to process it!",
+		})
 	})
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -182,6 +256,7 @@ For EVERY user request, you MUST first call the route_request tool with their me
 3. Financial Help - financial advice, budgeting, saving guidance
 4. Withdraw - educational withdrawal with safety analysis
 5. Deposit - simple deposit to savings with earnings preview
+6. APY Stability - comprehensive vault rate stability analysis
 
 WHAT YOU DO:
 You help users manage their money using Liminal's stablecoin banking platform. You can check balances, review transactions, send money, and manage savings - all through natural conversation.
@@ -206,7 +281,10 @@ MONEY MOVEMENT RULES (IMPORTANT):
   * deposit_savings: "Deposit $100 USD into savings"
   * withdraw_savings: "Withdraw $50 USD from savings"
 - Never assume amounts or recipients
-- Always use the exact currency the user specified
+- CRITICAL: For deposit_savings and withdraw_savings, ALWAYS use 'USD' or 'EUR' as currency
+  * ❌ WRONG: currency="USDC" or currency="EURC" (will cause 404 error)
+  * ✅ CORRECT: currency="USD" or currency="EUR"
+  * The API converts USD→USDC and EUR→EURC automatically
 
 AVAILABLE BANKING TOOLS:
 - Check wallet balance (get_balance)
@@ -223,6 +301,11 @@ CUSTOM ANALYTICAL TOOLS:
 - Route request through orchestrator (route_request) - CALL THIS FIRST!
 - Analyze spending patterns (analyze_spending)
 - Set weekly spending goal (spend_weekly_goal) - requires confirmation
+- Process receipt images (process_receipt_image) - Extract receipt data from uploaded images
+  * Use when user uploads a receipt image or asks to split a bill
+  * Accepts base64-encoded image data
+  * Returns merchant, total, line items, date, currency, and more
+  * Perfect for bill splitting and expense tracking
 - Create calendar reminders for periodic investing (create_calendar_reminder) - requires confirmation
   * Use when user wants periodic/weekly/monthly investment reminders
   * Requires: frequency (weekly/bi-weekly/monthly), amount, currency
@@ -1822,6 +1905,476 @@ func categorizeSingleNote(note string) string {
 }
 
 // ============================================================================
+// CUSTOM TOOL: RECEIPT PROCESSOR
+// ============================================================================
+// Processes receipt images using TabScanner API
+
+const (
+	tabScannerProcessURL = "https://api.tabscanner.com/api/2/process"
+	tabScannerResultBase = "https://api.tabscanner.com/api/result/"
+)
+
+type tabScannerProcessResponse struct {
+	Token      string `json:"token"`
+	Status     string `json:"status"`
+	StatusCode int    `json:"status_code"`
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+	Code       int    `json:"code"`
+}
+
+type tabScannerAPIError struct {
+	Message    string `json:"message"`
+	Status     string `json:"status"`
+	StatusCode int    `json:"status_code"`
+	Success    bool   `json:"success"`
+	Code       int    `json:"code"`
+}
+
+func createReceiptProcessorTool(liminalExecutor core.ToolExecutor) core.Tool {
+	return tools.New("process_receipt_image").
+		Description("Process a receipt image to extract total amount, line items, merchant info, and other details. Use this when user asks to process/split a receipt. The imageId parameter should be 'latest' to use the most recently uploaded image.").
+		Schema(tools.ObjectSchema(map[string]interface{}{
+			"imageId": tools.StringProperty("Image ID from upload (use 'latest' for most recent upload)"),
+		})).
+		Handler(func(ctx context.Context, toolParams *core.ToolParams) (*core.ToolResult, error) {
+			var params map[string]interface{}
+			if err := json.Unmarshal(toolParams.Input, &params); err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": "Invalid input parameters"},
+				}, nil
+			}
+
+			imageIdParam, _ := params["imageId"].(string)
+			if imageIdParam == "" {
+				imageIdParam = "latest"
+			}
+
+			// Find the image - if "latest", get the most recent one
+			var imageData string
+			if imageIdParam == "latest" {
+				// Get most recent image (last added to map)
+				var latestKey string
+				for key := range uploadedImages {
+					if latestKey == "" || key > latestKey {
+						latestKey = key
+					}
+				}
+				if latestKey == "" {
+					return &core.ToolResult{
+						Success: false,
+						Data:    map[string]interface{}{"error": "No receipt image uploaded yet. Please ask the user to upload a receipt image first using the camera button."},
+					}, nil
+				}
+				imageData = uploadedImages[latestKey]
+			} else {
+				var ok bool
+				imageData, ok = uploadedImages[imageIdParam]
+				if !ok {
+					return &core.ToolResult{
+						Success: false,
+						Data:    map[string]interface{}{"error": fmt.Sprintf("Image ID %s not found", imageIdParam)},
+					}, nil
+				}
+			}
+
+			// Decode base64 and save to temp file
+			var imagePath string
+			imageBytes, err := base64.StdEncoding.DecodeString(imageData)
+			if err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": fmt.Sprintf("Failed to decode base64: %v", err)},
+				}, nil
+			}
+
+			// Create temp file
+			tempFile := filepath.Join(".", fmt.Sprintf("receipt-upload-%d.jpeg", time.Now().Unix()))
+			if err := os.WriteFile(tempFile, imageBytes, 0644); err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": fmt.Sprintf("Failed to save image: %v", err)},
+				}, nil
+			}
+			imagePath = tempFile
+			defer os.Remove(tempFile) // Clean up after processing
+			log.Printf("📸 Processing receipt image: %s", imagePath)
+
+			// Get TabScanner API key
+			apiKey := os.Getenv("TABSCANNER_APIKEY")
+			if apiKey == "" {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": "TABSCANNER_APIKEY not configured"},
+				}, nil
+			}
+
+			// Process receipt with TabScanner
+			ctxTimeout, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+
+			token, err := callTabScannerProcess(ctxTimeout, apiKey, imagePath)
+			if err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": fmt.Sprintf("Failed to process receipt: %v", err)},
+				}, nil
+			}
+
+			log.Printf("🎫 TabScanner token received: %s", token)
+
+			// Wait before polling
+			time.Sleep(5 * time.Second)
+
+			// Poll for result
+			resultJSON, err := pollTabScannerResult(ctxTimeout, apiKey, token, 1*time.Second, 30)
+			if err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": fmt.Sprintf("Failed to get result: %v", err)},
+				}, nil
+			}
+
+			// Parse result
+			var result map[string]interface{}
+			if err := json.Unmarshal(resultJSON, &result); err != nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": fmt.Sprintf("Failed to parse result: %v", err)},
+				}, nil
+			}
+
+			log.Printf("✅ Receipt processed successfully")
+
+			// Extract key information
+			receipt, _ := result["result"].(map[string]interface{})
+			if receipt == nil {
+				return &core.ToolResult{
+					Success: false,
+					Data:    map[string]interface{}{"error": "No receipt data found in result"},
+				}, nil
+			}
+
+			return &core.ToolResult{
+				Success: true,
+				Data: map[string]interface{}{
+					"merchant":     receipt["establishment"],
+					"total":        receipt["total"],
+					"currency":     receipt["currency"],
+					"date":         receipt["date"],
+					"line_items":   receipt["lineItems"],
+					"tax":          receipt["tax"],
+					"subtotal":     receipt["subTotal"],
+					"address":      receipt["address"],
+					"phone":        receipt["phoneNumber"],
+					"full_result":  receipt,
+				},
+			}, nil
+		}).
+		Build()
+}
+
+// callTabScannerProcess uploads the image to TabScanner and returns the token
+func callTabScannerProcess(ctx context.Context, apiKey, imagePath string) (string, error) {
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	// "file" is required
+	part, err := writer.CreateFormFile("file", filepath.Base(imagePath))
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return "", err
+	}
+
+	// Optional form fields
+	_ = writer.WriteField("documentType", "receipt")
+	_ = writer.WriteField("region", "gb")
+	_ = writer.WriteField("defaultDateParsing", "d/m")
+
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tabScannerProcessURL, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("apikey", apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(resp.Body)
+
+	// Try parse as success response
+	var pr tabScannerProcessResponse
+	if err := json.Unmarshal(respBytes, &pr); err == nil && pr.Token != "" {
+		return pr.Token, nil
+	}
+
+	// Otherwise parse error object if present
+	var ae tabScannerAPIError
+	if err := json.Unmarshal(respBytes, &ae); err == nil && ae.Message != "" {
+		return "", fmt.Errorf("tabscanner error (status_code=%d code=%d): %s", ae.StatusCode, ae.Code, ae.Message)
+	}
+
+	return "", fmt.Errorf("unexpected response (http=%d): %s", resp.StatusCode, string(respBytes))
+}
+
+// pollTabScannerResult polls for the receipt processing result
+func pollTabScannerResult(ctx context.Context, apiKey, token string, interval time.Duration, maxAttempts int) ([]byte, error) {
+	if token == "" {
+		return nil, errors.New("empty token")
+	}
+
+	url := tabScannerResultBase + token
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("apikey", apiKey)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		// Peek status_code if present
+		var meta struct {
+			StatusCode int    `json:"status_code"`
+			Status     string `json:"status"`
+			Code       int    `json:"code"`
+			Message    string `json:"message"`
+		}
+		_ = json.Unmarshal(b, &meta)
+
+		// TabScanner returns status_code=3 with status="done" when result is ready
+		if meta.StatusCode == 3 && meta.Status == "done" {
+			return b, nil
+		}
+		// status_code=2 means still processing
+		if meta.StatusCode == 2 {
+			time.Sleep(interval)
+			continue
+		}
+
+		// Any other code: treat as error and surface payload
+		return nil, fmt.Errorf("unexpected result status_code=%d attempt=%d/%d payload=%s", meta.StatusCode, attempt, maxAttempts, string(b))
+	}
+
+	return nil, fmt.Errorf("result not available after %d attempts", maxAttempts)
+}
+
+// ============================================================================
+// APY STABILITY SCORE FUNCTIONS
+// ============================================================================
+
+// updateAPYHistory adds a new APY value and removes the oldest
+func updateAPYHistory(newAPY float64) {
+	apyMutex.Lock()
+	defer apyMutex.Unlock()
+	
+	// Only update if new value is DIFFERENT from last value
+	if newAPY == lastAPYValue {
+		log.Printf("⏭️  Skipping APY update: %.2f%% == %.2f%% (no change)", newAPY, lastAPYValue)
+		return
+	}
+	
+	if newAPY > lastAPYValue {
+		log.Printf("📈 APY increased: %.2f%% → %.2f%%", lastAPYValue, newAPY)
+	} else {
+		log.Printf("📉 APY decreased: %.2f%% → %.2f%%", lastAPYValue, newAPY)
+	}
+	
+	// Remove first element (oldest) and append new value to end
+	if len(apyHistory) >= 30 {
+		apyHistory = apyHistory[1:]
+		log.Printf("🔄 Removed oldest APY value (%.2f%%), maintaining 30-day window", apyHistory[0])
+	}
+	apyHistory = append(apyHistory, newAPY)
+	lastAPYValue = newAPY
+	log.Printf("✅ APY history updated. Current window: %.2f%% to %.2f%% (%d values)", apyHistory[0], apyHistory[len(apyHistory)-1], len(apyHistory))
+	log.Printf("📋 New APY history: %v", apyHistory)
+}
+
+// calculateStandardDeviation calculates std dev for APY volatility
+func calculateStandardDeviation(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	
+	mean := 0.0
+	for _, v := range values {
+		mean += v
+	}
+	mean /= float64(len(values))
+	
+	variance := 0.0
+	for _, v := range values {
+		diff := v - mean
+		variance += diff * diff
+	}
+	variance /= float64(len(values))
+	
+	return math.Sqrt(variance)
+}
+
+// calculateVolatilityScore - measures APY jumpiness
+func calculateVolatilityScore(history []float64) float64 {
+	if len(history) < 7 {
+		return 0.5 // Not enough data
+	}
+	
+	// 30-day volatility
+	vol30d := calculateStandardDeviation(history)
+	
+	// Normalize: assume max volatility is 1.0% (very volatile)
+	maxVol := 1.0
+	volScore := 1.0 - math.Min(vol30d/maxVol, 1.0)
+	
+	return volScore
+}
+
+// calculateDrawdownScore - measures frequency of sudden drops
+func calculateDrawdownScore(history []float64) float64 {
+	if len(history) < 2 {
+		return 0.5
+	}
+	
+	drawdownThreshold := 0.5 // 0.5% drop
+	drawdownCount := 0
+	
+	for i := 1; i < len(history); i++ {
+		percentChange := ((history[i] - history[i-1]) / history[i-1]) * 100
+		if percentChange < -drawdownThreshold {
+			drawdownCount++
+		}
+	}
+	
+	// Normalize: expect max 10 drawdowns in 30 days
+	maxExpected := 10.0
+	drawdownScore := 1.0 - math.Min(float64(drawdownCount)/maxExpected, 1.0)
+	
+	return drawdownScore
+}
+
+// calculateReversionScore - measures how fast APY recovers after drops
+func calculateReversionScore(history []float64) float64 {
+	if len(history) < 7 {
+		return 0.5
+	}
+	
+	// Calculate rolling mean
+	mean := 0.0
+	for _, v := range history {
+		mean += v
+	}
+	mean /= float64(len(history))
+	
+	// Count how many days APY is below mean, then measure recovery time
+	belowMeanCount := 0
+	totalRecoveryTime := 0
+	inDrawdown := false
+	drawdownDays := 0
+	
+	for _, apy := range history {
+		if apy < mean {
+			if !inDrawdown {
+				inDrawdown = true
+				drawdownDays = 0
+			}
+			drawdownDays++
+		} else {
+			if inDrawdown {
+				totalRecoveryTime += drawdownDays
+				belowMeanCount++
+				inDrawdown = false
+			}
+		}
+	}
+	
+	if belowMeanCount == 0 {
+		return 1.0 // Never dropped below mean = very stable
+	}
+	
+	avgRecoveryTime := float64(totalRecoveryTime) / float64(belowMeanCount)
+	
+	// Normalize: expect max 7 days recovery
+	maxRecoveryDays := 7.0
+	reversionScore := 1.0 - math.Min(avgRecoveryTime/maxRecoveryDays, 1.0)
+	
+	return reversionScore
+}
+
+// calculateTimeAboveScore - measures consistency above threshold
+func calculateTimeAboveScore(history []float64, threshold float64) float64 {
+	if len(history) == 0 {
+		return 0
+	}
+	
+	daysAbove := 0
+	for _, apy := range history {
+		if apy > threshold {
+			daysAbove++
+		}
+	}
+	
+	return float64(daysAbove) / float64(len(history))
+}
+
+// calculateStabilityScore - combines all metrics into final score
+func calculateStabilityScore() (score float64, label string, metrics map[string]float64) {
+	apyMutex.Lock()
+	history := make([]float64, len(apyHistory))
+	copy(history, apyHistory)
+	apyMutex.Unlock()
+	
+	// Calculate individual metrics (removed reversion score)
+	volScore := calculateVolatilityScore(history)
+	drawdownScore := calculateDrawdownScore(history)
+	timeAboveScore := calculateTimeAboveScore(history, 5.5)
+	
+	// Weighted combination (adjusted weights without reversion: volatility 40%, drawdown 35%, time_above 25%)
+	score = (0.40*volScore + 0.35*drawdownScore + 0.25*timeAboveScore) * 100
+	
+	// Label
+	if score > 80 {
+		label = "Stable 🟢"
+	} else if score > 60 {
+		label = "Opportunistic 🟡"
+	} else if score > 40 {
+		label = "Spiky 🟠"
+	} else {
+		label = "Unreliable 🔴"
+	}
+	
+	metrics = map[string]float64{
+		"volatility": volScore * 100,
+		"drawdown":   drawdownScore * 100,
+		"time_above": timeAboveScore * 100,
+	}
+	
+	return score, label, metrics
+}
+
+// ============================================================================
 // CUSTOM TOOL: GRAPH ORCHESTRATOR
 // ============================================================================
 // Routes requests through the LangGraph workflow system
@@ -1865,15 +2418,23 @@ func createGraphOrchestratorTool(liminalExecutor core.ToolExecutor) core.Tool {
 			// Extract routing decision
 			route, _ := graph.State.Conversation["route"].(string)
 			handlerType, _ := graph.State.Conversation["handler_type"].(string)
+			
+			// Extract the generated response if available
+			var generatedResponse string
+			if len(graph.State.Messages) > 0 {
+				generatedResponse = graph.State.Messages[len(graph.State.Messages)-1]
+			}
 
 			var guidance string
 			switch handlerType {
 			case "image_payment":
 				guidance = "User wants to split a payment or send money based on an image/receipt. You should ask for the receipt image, analyze it, calculate splits, and use send_money tool to process payments."
 			case "withdraw":
-				guidance = "User wants to withdraw money from savings. The system has analyzed their liquidity situation and provided educational content about withdrawal safety. Now help them complete the withdrawal using the withdraw_savings tool. Require: amount (as string) and currency ('USD' or 'EUR'). If this was an unsafe withdrawal, also offer to set up the weekly budget using spend_weekly_goal tool after completing the withdrawal."
+				guidance = "User wants to withdraw money from savings. The system has analyzed their liquidity situation and provided educational content about withdrawal safety. Now help them complete the withdrawal using the withdraw_savings tool. CRITICAL: Use currency='USD' or currency='EUR' ONLY (NOT 'USDC' or 'EURC'). Require: amount (as string) and currency ('USD' or 'EUR'). If this was an unsafe withdrawal, also offer to set up the weekly budget using spend_weekly_goal tool after completing the withdrawal."
 			case "deposit":
-				guidance = "User wants to deposit money into savings. The system has shown their available balances and potential earnings. Help them complete the deposit using the deposit_savings tool. Require: amount (as string) and currency ('USD' or 'EUR'). This tool requires user confirmation. Encourage them about the benefits of earning passive income through compound interest."
+				guidance = "User wants to deposit money into savings. The system has shown their available balances and potential earnings. Help them complete the deposit using the deposit_savings tool. CRITICAL: Use currency='USD' or currency='EUR' ONLY (NOT 'USDC' or 'EURC'). Require: amount (as string) and currency ('USD' or 'EUR'). This tool requires user confirmation. Encourage them about the benefits of earning passive income through compound interest."
+			case "apy_stability":
+				guidance = "User wants to check APY stability score. The system has analyzed 30 days of vault rate history and calculated a comprehensive stability score. IMPORTANT: Present the complete analysis that was generated, including the score, label, all metrics, and recommendations. The analysis is provided below - format it clearly for the user.\n\n" + generatedResponse
 			case "financial_help":
 				guidance = "User needs financial assistance with low funds. Use check_weeklyspend, analyze_spending, and categorize_transactions to help them improve their financial situation. Focus on budget management, reducing expenses, and building up savings."
 			case "financial_save":
@@ -1918,10 +2479,11 @@ func createGraphOrchestratorTool(liminalExecutor core.ToolExecutor) core.Tool {
 			}
 
 			result := map[string]interface{}{
-				"route":        route,
-				"handler_type": handlerType,
-				"guidance":     guidance,
-				"user_message": params.UserMessage,
+				"route":             route,
+				"handler_type":      handlerType,
+				"guidance":          guidance,
+				"user_message":      params.UserMessage,
+				"generated_response": generatedResponse,
 			}
 
 			return &core.ToolResult{
@@ -2285,30 +2847,130 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 
 	// Root Node: Orchestrator - coordinates the entire workflow
 	graph.AddNode("orchestrator", func(ctx context.Context, state *GraphState) error {
-		log.Println("Orchestrator: Analyzing request and routing to appropriate handler...")
-		// The orchestrator analyzes the user's request and routes to the correct first-layer node
-		// In a real implementation, this would use Claude to classify the request type
+		log.Println("Orchestrator: Analyzing request with Claude and routing to appropriate handler...")
 		
-		// Example routing logic (would be replaced with actual classification)
 		userInput := state.Conversation["user_input"].(string)
+		log.Printf("📝 User input: %s", userInput)
 		
-		if strings.Contains(userInput, "deposit") || strings.Contains(userInput, "save") && !strings.Contains(userInput, "help") || strings.Contains(userInput, "put money") || strings.Contains(userInput, "add to savings") {
-			state.Conversation["route"] = "deposit"
-		} else if strings.Contains(userInput, "withdraw") || strings.Contains(userInput, "take out") || strings.Contains(userInput, "pull from savings") {
-			state.Conversation["route"] = "withdraw"
-		} else if strings.Contains(userInput, "image") || strings.Contains(userInput, "receipt") || strings.Contains(userInput, "split") {
-			state.Conversation["route"] = "image_payment"
-			log.Println("💙💙💙💙💙💙💙💙💙💙💙💙💙")
-		} else if strings.Contains(userInput, "broke") || strings.Contains(userInput, "help") || 
-			strings.Contains(userInput, "stats") || strings.Contains(userInput, "investing") || 
-			strings.Contains(userInput, "saving") {
-			state.Conversation["route"] = "financial_help"
-			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
-			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
-			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
-		} else {
+		// Use Claude to intelligently classify the request
+		orchestratorPrompt := `You are an intelligent request router for a financial AI assistant. Your job is to analyze user requests and determine which specialized handler should process them.
+
+Available Routes:
+1. "apy_stability" - For queries about vault rate stability, APY reliability, volatility, consistency
+   Examples: "How stable is the vault rate?", "Is the APY reliable?", "Should I trust this rate?"
+
+2. "deposit" - For depositing/saving money into savings vaults
+   Examples: "Deposit 100 USD", "Put money in savings", "Save 50 EUR"
+
+3. "withdraw" - For withdrawing money from savings
+   Examples: "Withdraw 100 USD", "Take out money", "Pull from savings"
+
+4. "image_payment" - For receipt splitting and image-based payments
+   Examples: "Split this receipt", "Process this image", "Share payment from receipt"
+
+5. "financial_help" - For financial advice, budgeting help, spending analysis
+   Examples: "I'm broke", "Help me save", "Show my stats", "Budget advice"
+
+6. "general_inquiry" - For all other banking queries (balance checks, transactions, transfers)
+   Examples: "What's my balance?", "Send money to Alice", "Show transactions"
+
+Analyze this user request and respond with ONLY the route name (e.g., "apy_stability").
+
+User Request: ` + userInput
+
+		// Call Claude API
+		anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+		requestBody := map[string]interface{}{
+			"model":      "claude-sonnet-4-20250514",
+			"max_tokens": 50,
+			"messages": []map[string]interface{}{
+				{
+					"role":    "user",
+					"content": orchestratorPrompt,
+				},
+			},
+		}
+		
+		jsonBody, _ := json.Marshal(requestBody)
+		req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonBody))
+		if err != nil {
+			log.Printf("Failed to create Claude request: %v", err)
 			state.Conversation["route"] = "general_inquiry"
+			return nil
+		}
+		
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", anthropicKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("Failed to call Claude: %v", err)
+			state.Conversation["route"] = "general_inquiry"
+			return nil
+		}
+		defer resp.Body.Close()
+		
+		var claudeResponse struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		
+		if err := json.NewDecoder(resp.Body).Decode(&claudeResponse); err != nil {
+			log.Printf("Failed to parse Claude response: %v", err)
+			state.Conversation["route"] = "general_inquiry"
+			return nil
+		}
+		
+		if len(claudeResponse.Content) == 0 {
+			log.Println("Empty Claude response")
+			state.Conversation["route"] = "general_inquiry"
+			return nil
+		}
+		
+		// Extract route from Claude's response
+		route := strings.TrimSpace(strings.ToLower(claudeResponse.Content[0].Text))
+		route = strings.Trim(route, "\"'")
+		
+		// Validate route
+		validRoutes := map[string]bool{
+			"apy_stability":    true,
+			"deposit":          true,
+			"withdraw":         true,
+			"image_payment":    true,
+			"financial_help":   true,
+			"general_inquiry":  true,
+		}
+		
+		if !validRoutes[route] {
+			log.Printf("Invalid route from Claude: %s, defaulting to general_inquiry", route)
+			route = "general_inquiry"
+		}
+		
+		state.Conversation["route"] = route
+		
+		// Log selected route with emojis
+		switch route {
+		case "apy_stability":
+			log.Println("😍😍😍😍😍😍😍😍😍😍😍")
+			log.Println("😍 APY STABILITY ROUTE SELECTED 😍")
+			log.Println("😍😍😍😍😍😍😍😍😍😍😍")
+		case "deposit":
+			log.Println("💰 DEPOSIT ROUTE SELECTED")
+		case "withdraw":
+			log.Println("🏦 WITHDRAW ROUTE SELECTED")
+		case "image_payment":
+			log.Println("💙💙💙💙💙💙💙💙💙💙💙💙💙")
+			log.Println("💙 IMAGE PAYMENT ROUTE SELECTED")
+		case "financial_help":
+			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
+			log.Println("🔴 FINANCIAL HELP ROUTE SELECTED")
+			log.Println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴")
+		case "general_inquiry":
 			log.Println("🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏🍏")
+			log.Println("🍏 GENERAL INQUIRY ROUTE SELECTED")
 		}
 		
 		return nil
@@ -2340,19 +3002,16 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 
 	// Node 2: Image Payment - handles receipt splitting and image-based payments
 	graph.AddNode("image_payment", func(ctx context.Context, state *GraphState) error {
-		log.Println("Image Payment: Processing receipt/image for payment splitting...")
-		// Use Claude vision to analyze receipt images
-		// Extract amounts, calculate splits, identify friends to pay
+		log.Println("Image Payment: Processing receipt for payment splitting...")
 		state.Conversation["handler_type"] = "image_payment"
 		state.CurrentTool = "process_receipt_image"
 		
-		// Example: Parse receipt and determine split amounts
+		// The actual receipt processing will be done by Claude calling process_receipt_image tool
+		// This node just sets up the context for receipt-based payments
 		state.ToolResult = map[string]interface{}{
-			"total_amount": 50.00,
-			"split_count":  2,
-			"per_person":   25.00,
-			"currency":     "USD",
-			"recipients":   []string{"@alice", "@bob"},
+			"status": "ready_for_receipt",
+			"message": "Ready to process receipt image. Please provide a receipt image to extract payment details.",
+			"instructions": "I can help you split this bill! Upload a receipt image and I'll extract the total amount, line items, and help you split it with friends.",
 		}
 		return nil
 	})
@@ -3139,190 +3798,6 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 		return nil
 	})
 
-	// Withdraw - educational withdrawal with safety checks
-	graph.AddNode("withdraw", func(ctx context.Context, state *GraphState) error {
-		log.Println("Withdraw: Analyzing withdrawal safety and providing education...")
-		
-		// Fetch current balances
-		balanceRequest := map[string]interface{}{}
-		balanceRequestJSON, _ := json.Marshal(balanceRequest)
-		
-		balanceResponse, err := liminalExecutor.Execute(ctx, &core.ExecuteRequest{
-			UserID:    state.Conversation["user_id"].(string),
-			Tool:      "get_balance",
-			Input:     balanceRequestJSON,
-			RequestID: state.Conversation["request_id"].(string),
-		})
-		
-		if err != nil || !balanceResponse.Success {
-			log.Printf("Failed to fetch balance: %v", err)
-			return nil
-		}
-		
-		savingsResponse, err := liminalExecutor.Execute(ctx, &core.ExecuteRequest{
-			UserID:    state.Conversation["user_id"].(string),
-			Tool:      "get_savings_balance",
-			Input:     balanceRequestJSON,
-			RequestID: state.Conversation["request_id"].(string),
-		})
-		
-		if err != nil || !savingsResponse.Success {
-			log.Printf("Failed to fetch savings balance: %v", err)
-			return nil
-		}
-		
-		// Parse balances
-		var walletBalance, savingsBalance float64
-		var walletData map[string]interface{}
-		if err := json.Unmarshal(balanceResponse.Data, &walletData); err == nil {
-			if balances, ok := walletData["balances"].([]interface{}); ok {
-				for _, bal := range balances {
-					if balMap, ok := bal.(map[string]interface{}); ok {
-						if currency, ok := balMap["currency"].(string); ok && (currency == "USD" || currency == "EUR") {
-							if balStr, ok := balMap["balance"].(string); ok {
-								var amount float64
-								fmt.Sscanf(balStr, "%f", &amount)
-								walletBalance += amount
-							}
-						}
-					}
-				}
-			}
-		}
-		
-		var savingsData map[string]interface{}
-		if err := json.Unmarshal(savingsResponse.Data, &savingsData); err == nil {
-			if positions, ok := savingsData["positions"].([]interface{}); ok {
-				for _, pos := range positions {
-					if posMap, ok := pos.(map[string]interface{}); ok {
-						if balStr, ok := posMap["balance"].(string); ok {
-							var amount float64
-							fmt.Sscanf(balStr, "%f", &amount)
-							savingsBalance += amount
-						}
-					}
-				}
-			}
-		}
-		
-		// Extract withdrawal details from user message (Claude should extract this)
-		userInput := state.Conversation["user_input"].(string)
-		log.Printf("User withdrawal request: %s", userInput)
-		
-		totalLiquidity := walletBalance + savingsBalance
-		liquidityRatio := walletBalance / totalLiquidity
-		
-		// Determine withdrawal safety
-		// Unsafe: Low wallet balance (<20% of total) and withdrawing from savings
-		// Safe: Sufficient wallet balance (>=20% of total) for big purchase
-		isUnsafeWithdrawal := liquidityRatio < 0.20 && savingsBalance > 0
-		
-		var recommendations []string
-		
-		if isUnsafeWithdrawal {
-			// UNSAFE WITHDRAWAL - Very little liquidity, pulling from savings
-			recommendations = append(recommendations, []string{
-				"⚠️ Withdrawal Safety Check:",
-				"",
-				fmt.Sprintf("Your current situation:"),
-				fmt.Sprintf("   • Wallet (liquid): $%.2f (%.0f%% of total)", walletBalance, liquidityRatio*100),
-				fmt.Sprintf("   • Savings: $%.2f", savingsBalance),
-				fmt.Sprintf("   • Total: $%.2f", totalLiquidity),
-				"",
-				"🚨 This is a hasty withdrawal situation:",
-				"",
-				"Why this matters:",
-				"   1. You have very little liquid cash available (less than 20% of your total)",
-				"   2. You're pulling from your savings that's earning interest",
-				"   3. This could become a habit that prevents wealth building",
-				"",
-				"💡 What you should know:",
-				"   • Financial experts recommend keeping 3-6 months expenses liquid",
-				"   • Savings should be for emergencies or planned goals, not daily spending",
-				"   • Frequent withdrawals mean you're living above your means",
-				"",
-				"📚 Education - The Liquidity Trap:",
-				"When you withdraw from savings for non-emergencies, you lose:",
-				"   • Future compound interest earnings",
-				"   • Emergency fund protection",
-				"   • Financial flexibility for opportunities",
-				"",
-				fmt.Sprintf("Example: If you leave $%.2f in savings at 5%% APY, you'd earn $%.2f per year.", savingsBalance, savingsBalance*0.05),
-				"By withdrawing, you're giving up this passive income.",
-				"",
-				"✅ I'll allow this withdrawal, BUT...",
-				"",
-				"To protect your financial health, I'm going to help you set a weekly spending budget.",
-				"This will prevent you from needing emergency withdrawals in the future.",
-			}...)
-		} else {
-			// SAFE WITHDRAWAL - Sufficient liquidity for big purchase
-			recommendations = append(recommendations, []string{
-				"✅ Withdrawal Safety Check:",
-				"",
-				fmt.Sprintf("Your current situation:"),
-				fmt.Sprintf("   • Wallet (liquid): $%.2f (%.0f%% of total)", walletBalance, liquidityRatio*100),
-				fmt.Sprintf("   • Savings: $%.2f", savingsBalance),
-				fmt.Sprintf("   • Total: $%.2f", totalLiquidity),
-				"",
-				"✅ This is a safe withdrawal situation:",
-				"You have sufficient liquid funds available, so withdrawing from savings is reasonable.",
-				"",
-				"💡 Quick Financial Education:",
-				"",
-				"Even though this is safe, here's what you should consider:",
-				"   1. Opportunity Cost: Money in savings earns compound interest",
-				"   2. Rebuilding: Plan to replenish your savings after this withdrawal",
-				"   3. Goals: Make sure this purchase aligns with your financial priorities",
-				"",
-				"📊 Smart Withdrawal Practices:",
-				"   • Only withdraw for planned big purchases or emergencies",
-				"   • Try to maintain at least 50% of your wealth in savings/investments",
-				"   • Set a goal to replace withdrawn funds within 3 months",
-				"",
-				fmt.Sprintf("💰 Cost of Withdrawal: At 5%% APY, every $100 withdrawn costs you $5/year in lost earnings."),
-				"",
-				"✅ You're cleared to proceed with this withdrawal.",
-				"Just specify the amount and currency, and I'll help you withdraw.",
-			}...)
-		}
-		
-		// Calculate recommended weekly budget for unsafe withdrawals
-		var weeklyBudgetLimit float64
-		if isUnsafeWithdrawal {
-			// Suggest conservative budget: 15% of total liquidity per week
-			weeklyBudgetLimit = totalLiquidity * 0.15
-			recommendations = append(recommendations, []string{
-				"",
-				"🎯 Recommended Weekly Budget:",
-				fmt.Sprintf("   • Weekly spending limit: $%.2f", weeklyBudgetLimit),
-				fmt.Sprintf("   • This keeps you at ~60%% of your income for essentials"),
-				"   • Leaves room to rebuild your liquid funds",
-				"",
-				"Would you like me to set this weekly budget goal for you?",
-				"(I can track your spending and alert you when you're approaching the limit)",
-			}...)
-		}
-		
-		state.ToolResult = map[string]interface{}{
-			"status":                "withdrawal_analyzed",
-			"recommendation_type":   "withdrawal_education",
-			"recommendations":       recommendations,
-			"is_unsafe_withdrawal": isUnsafeWithdrawal,
-			"wallet_balance":        walletBalance,
-			"savings_balance":       savingsBalance,
-			"liquidity_ratio":       liquidityRatio,
-			"weekly_budget_limit":   weeklyBudgetLimit,
-			"can_withdraw":          true,
-		}
-		
-		state.Conversation["handler_type"] = "withdraw"
-		state.Conversation["is_unsafe_withdrawal"] = isUnsafeWithdrawal
-		state.Conversation["weekly_budget_limit"] = weeklyBudgetLimit
-		
-		return nil
-	})
-
 	// Deposit - simple deposit to savings with balance check
 	graph.AddNode("deposit", func(ctx context.Context, state *GraphState) error {
 		log.Println("Deposit: Checking available funds for deposit...")
@@ -3467,6 +3942,163 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 		return nil
 	})
 
+	// APY Stability Check - analyzes vault rate stability
+	graph.AddNode("apy_stability", func(ctx context.Context, state *GraphState) error {
+		log.Println("APY Stability: Analyzing vault rate stability...")
+		
+		// Fetch current vault rates
+		vaultRequest := map[string]interface{}{}
+		vaultRequestJSON, _ := json.Marshal(vaultRequest)
+		
+		vaultResponse, err := liminalExecutor.Execute(ctx, &core.ExecuteRequest{
+			UserID:    state.UserID,
+			Tool:      "get_vault_rates",
+			Input:     vaultRequestJSON,
+			RequestID: fmt.Sprintf("apy-stability-%d", time.Now().Unix()),
+		})
+		
+		// Parse current USDC APY and update history
+		if err == nil && vaultResponse.Success {
+			var vaultData map[string]interface{}
+			if err := json.Unmarshal(vaultResponse.Data, &vaultData); err == nil {
+				if vaults, ok := vaultData["vaults"].([]interface{}); ok {
+					for _, vault := range vaults {
+						if vaultMap, ok := vault.(map[string]interface{}); ok {
+							if currency, ok := vaultMap["currency"].(string); ok && currency == "USDC" {
+								if apyStr, ok := vaultMap["apy"].(string); ok {
+									var currentAPY float64
+									fmt.Sscanf(apyStr, "%f", &currentAPY)
+									log.Printf("📊 Fetched USDC APY: %.2f%% (updating history)", currentAPY)
+									updateAPYHistory(currentAPY)
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		// Calculate stability score
+		score, label, metrics := calculateStabilityScore()
+		
+		// Get current APY stats
+		apyMutex.Lock()
+		currentAPY := apyHistory[len(apyHistory)-1]
+		minAPY := apyHistory[0]
+		maxAPY := apyHistory[0]
+		avgAPY := 0.0
+		for _, v := range apyHistory {
+			if v < minAPY {
+				minAPY = v
+			}
+			if v > maxAPY {
+				maxAPY = v
+			}
+			avgAPY += v
+		}
+		avgAPY /= float64(len(apyHistory))
+		apyMutex.Unlock()
+		
+		// Build recommendations
+		var recommendations []string
+		recommendations = append(recommendations, []string{
+			"📊 APY Stability Score Analysis",
+			"",
+			fmt.Sprintf("Overall Score: %.1f/100 - %s", score, label),
+			"",
+			"📈 Current USD Vault Stats (30 days):",
+			fmt.Sprintf("   • Current APY: %.2f%%", currentAPY),
+			fmt.Sprintf("   • Average APY: %.2f%%", avgAPY),
+			fmt.Sprintf("   • Range: %.2f%% - %.2f%%", minAPY, maxAPY),
+			"",
+			"🔍 Detailed Metrics:",
+			fmt.Sprintf("   • Volatility Score: %.1f/100", metrics["volatility"]),
+			"     (Higher = less jumpy, more predictable)",
+			fmt.Sprintf("   • Drawdown Score: %.1f/100", metrics["drawdown"]),
+			"     (Higher = fewer sudden drops)",
+			fmt.Sprintf("   • Time Above 5.5%%: %.1f/100", metrics["time_above"]),
+			"     (Higher = consistently good returns)",
+			"",
+		}...)
+		
+		// Add interpretation based on label
+		if score > 80 {
+			recommendations = append(recommendations, []string{
+				"✅ Stable Vault - Excellent for Long-Term Savings",
+				"",
+				"What this means:",
+				"   • Very predictable returns with minimal volatility",
+				"   • Rare sudden drops",
+				"   • Consistently above the 5.5% threshold",
+				"",
+				"💡 Recommendation:",
+				"   This is an ideal time to commit funds for long-term growth.",
+				"   Consider setting up automatic recurring deposits.",
+				"",
+				"💰 Ready to deposit? I can help you move funds to savings now!",
+			}...)
+		} else if score > 60 {
+			recommendations = append(recommendations, []string{
+				"🟡 Opportunistic Vault - Good for Strategic Timing",
+				"",
+				"What this means:",
+				"   • Moderate volatility with occasional dips",
+				"   • APY fluctuates but generally recovers",
+				"   • Good time to deposit during higher APY periods",
+				"",
+				"💡 Recommendation:",
+				"   Monitor APY trends and deposit when rates are above average.",
+				"   Consider dollar-cost averaging to smooth out volatility.",
+				"",
+				"💰 Conditions are favorable! I can help you deposit to savings now.",
+			}...)
+		} else if score > 40 {
+			recommendations = append(recommendations, []string{
+				"🟠 Spiky Vault - Use Caution",
+				"",
+				"What this means:",
+				"   • High volatility with frequent APY swings",
+				"   • Drawdowns are common and recovery can be slow",
+				"   • Returns are unpredictable",
+				"",
+				"💡 Recommendation:",
+				"   Only deposit funds you can afford to lock during dips.",
+				"   Consider shorter-term positions or diversify across vaults.",
+			}...)
+		} else {
+			recommendations = append(recommendations, []string{
+				"🔴 Unreliable Vault - High Risk",
+				"",
+				"What this means:",
+				"   • Extreme volatility, very unpredictable",
+				"   • Frequent sharp drops with poor recovery",
+				"   • Often below the 5.5% threshold",
+				"",
+				"💡 Recommendation:",
+				"   Avoid depositing significant funds until stability improves.",
+				"   Look for alternative vaults or wait for market stabilization.",
+			}...)
+		}
+		
+		state.ToolResult = map[string]interface{}{
+			"status":          "stability_analyzed",
+			"score":           score,
+			"label":           label,
+			"metrics":         metrics,
+			"current_apy":     currentAPY,
+			"average_apy":     avgAPY,
+			"min_apy":         minAPY,
+			"max_apy":         maxAPY,
+			"recommendations": recommendations,
+			"suggest_deposit": score > 60, // Trigger deposit suggestion when stability is good
+		}
+		
+		state.Conversation["handler_type"] = "apy_stability"
+		
+		return nil
+	})
+
 	// SECOND LAYER NODES - Processing nodes
 
 	// Execute tool based on first layer routing
@@ -3496,6 +4128,9 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 		case "deposit":
 			// Deposit info ready, waiting for user to specify amount
 			log.Println("Deposit information displayed, ready to process deposit...")
+		case "apy_stability":
+			// APY stability analysis complete
+			log.Println("APY stability analysis complete, preparing response...")
 		case "financial_save":
 			// Fetch and analyze savings opportunities
 			log.Println("Analyzing savings and investment opportunities...")
@@ -3596,6 +4231,16 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 			for _, rec := range recommendations {
 				response += fmt.Sprintf("%s\n", rec)
 			}
+		case "apy_stability":
+			result := state.ToolResult.(map[string]interface{})
+			log.Printf("🔍 APY Stability result: %+v", result)
+			recommendations := result["recommendations"].([]string)
+			log.Printf("📋 Found %d recommendations", len(recommendations))
+			response = ""
+			for _, rec := range recommendations {
+				response += fmt.Sprintf("%s\n", rec)
+			}
+			log.Printf("✅ Generated response length: %d characters", len(response))
 		case "general":
 			response = "I can help you with that. Let me check your account..."
 		}
@@ -3611,6 +4256,7 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 	graph.AddEdge("orchestrator", "financial_help")
 	graph.AddEdge("orchestrator", "withdraw")
 	graph.AddEdge("orchestrator", "deposit")
+	graph.AddEdge("orchestrator", "apy_stability")
 	
 	// Financial help branches to save or help route based on balance
 	graph.AddEdge("financial_help", "financial_save")
@@ -3625,6 +4271,7 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 	graph.AddEdge("investment_reminder", "execute_tool")
 	graph.AddEdge("withdraw", "execute_tool")
 	graph.AddEdge("deposit", "execute_tool")
+	graph.AddEdge("apy_stability", "execute_tool")
 	graph.AddEdge("financial_help_low_funds", "spending_analysis")
 	graph.AddEdge("spending_analysis", "budget_recommendations")
 	graph.AddEdge("budget_recommendations", "execute_tool")
@@ -3640,16 +4287,98 @@ func CreateFinancialAgentGraph(liminalExecutor core.ToolExecutor) *Graph {
 
 // RunGraphExample demonstrates how to use the graph workflow
 func RunGraphExample(liminalExecutor core.ToolExecutor) {
+	// This is just an example - in production, graphs are executed
+	// through the orchestrator tool which is called by Claude
+	
+	// Create graph
 	graph := CreateFinancialAgentGraph(liminalExecutor)
+	
+	// Execute with sample user input
+	if err := graph.Execute(context.Background(), "user123"); err != nil {
+		log.Printf("Graph execution error: %v", err)
+	}
+}
+
+// ============================================================================
+// BACKGROUND APY POLLING
+// ============================================================================
+// Automatically polls vault rates and maintains APY history
+
+func startAPYPolling(liminalExecutor core.ToolExecutor) {
+	// Poll every 5 minutes
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	// Do initial poll immediately
+	pollVaultRates(liminalExecutor)
+
+	// Then poll on schedule
+	for range ticker.C {
+		pollVaultRates(liminalExecutor)
+	}
+}
+
+func pollVaultRates(liminalExecutor core.ToolExecutor) {
+	log.Println("🔄 Polling vault rates...")
+	
+	// Log current APY history before polling
+	apyMutex.Lock()
+	log.Printf("📋 Current APY history (30 values): %v", apyHistory)
+	log.Printf("📊 Last APY value: %.2f%%", lastAPYValue)
+	apyMutex.Unlock()
 
 	ctx := context.Background()
-	userID := "example-user-123"
+	vaultRequest := map[string]interface{}{}
+	vaultRequestJSON, _ := json.Marshal(vaultRequest)
 
-	if err := graph.Execute(ctx, userID); err != nil {
-		log.Printf("Graph execution failed: %v", err)
+	// Use a system user ID for background polling
+	vaultResponse, err := liminalExecutor.Execute(ctx, &core.ExecuteRequest{
+		UserID:    "system-polling",
+		Tool:      "get_vault_rates",
+		Input:     vaultRequestJSON,
+		RequestID: fmt.Sprintf("poll-vault-rates-%d", time.Now().Unix()),
+	})
+
+	if err != nil {
+		log.Printf("⚠️  Failed to poll vault rates - error: %v", err)
 		return
 	}
+	
+	if !vaultResponse.Success {
+		log.Printf("⚠️  Vault rates request failed - Success=false, Error: %s", vaultResponse.Error)
+		log.Printf("⚠️  Response data: %s", string(vaultResponse.Data))
+		return
+	}
+	
+	log.Printf("✅ Successfully fetched vault rates")
 
-	log.Println("Graph execution completed successfully")
-	log.Printf("Final state messages: %v", graph.State.Messages)
+	// Parse vault rates
+	var vaultData map[string]interface{}
+	if err := json.Unmarshal(vaultResponse.Data, &vaultData); err != nil {
+		log.Printf("⚠️  Failed to parse vault rates: %v", err)
+		log.Printf("⚠️  Raw response: %s", string(vaultResponse.Data))
+		return
+	}
+	
+	log.Printf("📊 Parsed vault data: %+v", vaultData)
+
+	// Find USDC vault
+	if vaults, ok := vaultData["vaults"].([]interface{}); ok {
+		for _, vault := range vaults {
+			if vaultMap, ok := vault.(map[string]interface{}); ok {
+				currency, _ := vaultMap["currency"].(string)
+				if currency == "USDC" {
+					apyStr, _ := vaultMap["apy"].(string)
+					var newAPY float64
+					fmt.Sscanf(apyStr, "%f", &newAPY)
+
+					log.Printf("📊 Current USDC APY: %.2f%%", newAPY)
+					updateAPYHistory(newAPY)
+					return
+				}
+			}
+		}
+	}
+
+	log.Println("⚠️  USDC vault not found in response")
 }
